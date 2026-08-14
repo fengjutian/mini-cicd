@@ -18,6 +18,8 @@ import (
 
 	"github.com/charlesfeng/mini-cicd/apps/server/internal/auth"
 	"github.com/charlesfeng/mini-cicd/apps/server/internal/config"
+	"github.com/charlesfeng/mini-cicd/apps/server/internal/project"
+	"github.com/charlesfeng/mini-cicd/apps/server/internal/secret"
 )
 
 const sessionCookie = "minicicd_session"
@@ -35,20 +37,33 @@ type user struct {
 }
 
 type Server struct {
-	db      *sql.DB
-	cfg     config.Config
-	logger  *slog.Logger
-	limiter *loginLimiter
+	db       *sql.DB
+	cfg      config.Config
+	logger   *slog.Logger
+	limiter  *loginLimiter
+	projects *project.Service
 }
 
 func New(db *sql.DB, cfg config.Config, logger *slog.Logger) http.Handler {
-	s := &Server{db: db, cfg: cfg, logger: logger, limiter: newLoginLimiter()}
+	box, err := secret.New(cfg.MasterKey)
+	if err != nil {
+		panic(err)
+	}
+	s := &Server{db: db, cfg: cfg, logger: logger, limiter: newLoginLimiter(), projects: project.New(db, box)}
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /api/v1/status", s.status)
 	mux.HandleFunc("POST /api/v1/setup", s.setup)
 	mux.HandleFunc("POST /api/v1/auth/login", s.login)
 	mux.HandleFunc("POST /api/v1/auth/logout", s.requireAuth(s.logout))
 	mux.HandleFunc("GET /api/v1/auth/me", s.requireAuth(s.me))
+	mux.HandleFunc("GET /api/v1/projects", s.requireAuth(s.listProjects))
+	mux.HandleFunc("POST /api/v1/projects", s.requireAuth(s.createProject))
+	mux.HandleFunc("GET /api/v1/projects/{id}", s.requireAuth(s.getProject))
+	mux.HandleFunc("PUT /api/v1/projects/{id}", s.requireAuth(s.updateProject))
+	mux.HandleFunc("DELETE /api/v1/projects/{id}", s.requireAuth(s.archiveProject))
+	mux.HandleFunc("GET /api/v1/projects/{id}/variables", s.requireAuth(s.listVariables))
+	mux.HandleFunc("PUT /api/v1/projects/{id}/variables/{name}", s.requireAuth(s.putVariable))
+	mux.HandleFunc("DELETE /api/v1/projects/{id}/variables/{name}", s.requireAuth(s.deleteVariable))
 	mux.HandleFunc("GET /healthz", s.health)
 	mux.HandleFunc("GET /", s.index)
 	return s.securityHeaders(s.sameOrigin(s.limitBody(mux)))
