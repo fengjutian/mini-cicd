@@ -15,6 +15,8 @@ go build ./apps/server/cmd/minicicd
 
 服务端测试覆盖首次初始化、登录、Project/Secret、Git SHA 固化、数据库并发领取、Local Runner、取消、日志脱敏/SSE、Webhook 和服务重启恢复。
 
+Linux CI 还会以 root 启动受限 Runner daemon，再将测试命令降权到 UID 65534，验证 job 无法读取控制面 `0600` 私有文件。
+
 ## 真实 SSH 私有仓库
 
 仓库 Actions Secret 配置以下值后，CI 自动启用 `integration` 测试：

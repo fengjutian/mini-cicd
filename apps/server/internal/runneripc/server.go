@@ -94,6 +94,17 @@ func (s *Server) handle(parent context.Context, conn net.Conn) {
 		s.send(conn, Response{Type: "error", Message: "invalid command or timeout"})
 		return
 	}
+	if len(req.Environment) > 512 {
+		s.send(conn, Response{Type: "error", Message: "too many environment variables"})
+		return
+	}
+	for _, item := range req.Environment {
+		key, _, ok := strings.Cut(item, "=")
+		if !ok || key == "" || strings.ContainsRune(item, 0) || key == "MINICICD_MASTER_KEY" {
+			s.send(conn, Response{Type: "error", Message: "unsafe environment variable"})
+			return
+		}
+	}
 	s.serial.Lock()
 	defer s.serial.Unlock()
 	ctx, cancel := context.WithTimeout(parent, time.Duration(req.TimeoutSeconds)*time.Second)

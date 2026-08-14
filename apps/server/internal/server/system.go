@@ -79,7 +79,11 @@ func (s *Server) systemChecks(w http.ResponseWriter, r *http.Request) {
 	checks = append(checks, check{"secret_encryption", secretStatus, secretDetail})
 	runnerStatus, runnerDetail := "warning", "in-process Local Runner; use MINICICD_RUNNER_ENDPOINT in production"
 	if s.cfg.RunnerEndpoint != "" {
-		runnerStatus, runnerDetail = "ok", "isolated Runner socket: "+s.cfg.RunnerEndpoint
+		if info, err := os.Stat(s.cfg.RunnerEndpoint); err == nil && (info.Mode()&os.ModeSocket) != 0 {
+			runnerStatus, runnerDetail = "ok", "isolated Runner socket: "+s.cfg.RunnerEndpoint
+		} else {
+			runnerStatus, runnerDetail = "error", "isolated Runner socket is unavailable: "+s.cfg.RunnerEndpoint
+		}
 	}
 	checks = append(checks, check{"runner_isolation", runnerStatus, runnerDetail})
 	overall := "ok"

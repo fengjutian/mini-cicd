@@ -80,11 +80,15 @@ func New(db *sql.DB, cfg config.Config, logger *slog.Logger) (*Server, error) {
 	}
 	git := gitops.New(cfg.DataDir, db, box)
 	deps := deployment.New(db, git)
+	workspaceDir := cfg.RunnerWorkspaceDir
+	if workspaceDir == "" {
+		workspaceDir = filepath.Join(cfg.DataDir, "workspaces")
+	}
 	workspaceMode := os.FileMode(0o700)
 	if cfg.RunnerEndpoint != "" {
 		workspaceMode = 0o770
 	}
-	spaces, err := workspace.NewRoot(cfg.RunnerWorkspaceDir, workspaceMode)
+	spaces, err := workspace.NewRoot(workspaceDir, workspaceMode)
 	if err != nil {
 		return nil, err
 	}
