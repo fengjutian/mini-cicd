@@ -58,6 +58,7 @@ func (m *Manager) Start() {
 	m.wg.Add(1)
 	go func() {
 		defer m.wg.Done()
+		if err := m.RunOnce(m.ctx); err != nil && m.ctx.Err() == nil { m.logger.Error("initial maintenance failed", "error", err) }
 		ticker := time.NewTicker(m.interval)
 		defer ticker.Stop()
 		for {
