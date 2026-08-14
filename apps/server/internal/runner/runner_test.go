@@ -8,6 +8,8 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -204,6 +206,30 @@ func TestDeploymentTimeout(t *testing.T) {
 	done := waitTerminal(t, f.deps, d.ID, 10*time.Second)
 	if done.Status != "timed_out" {
 		t.Fatalf("status=%s error=%s", done.Status, done.ErrorSummary)
+	}
+}
+
+func TestHealthCheckRetriesThenSucceeds(t *testing.T) {
+	attempts := 0
+	health := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		attempts++
+		if attempts < 2 {
+			w.WriteHeader(503)
+			return
+		}
+		w.WriteHeader(204)
+	}))
+	defer health.Close()
+	f := newFixture(t, nil)
+	_, _ = f.db.Exec(`UPDATE projects SET health_enabled=1,health_url=?,health_timeout_seconds=2,health_retries=3,health_retry_interval_seconds=0,health_expected_status='200-299' WHERE id='p'`, health.URL)
+	d, err := f.deps.Create(context.Background(), "p", "manual")
+	if err != nil {
+		t.Fatal(err)
+	}
+	f.manager.Wake()
+	done := waitTerminal(t, f.deps, d.ID, 10*time.Second)
+	if done.Status != "succeeded" || attempts != 2 {
+		t.Fatalf("status=%s attempts=%d error=%s", done.Status, attempts, done.ErrorSummary)
 	}
 }
 

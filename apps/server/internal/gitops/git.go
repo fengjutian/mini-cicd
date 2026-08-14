@@ -84,6 +84,39 @@ func (g *Git) Resolve(ctx context.Context, projectID, repo, branch string) (depl
 	return commit, nil
 }
 
+func (g *Git) ResolveCommit(ctx context.Context, projectID, repo, branch, sha string) (deployment.Commit, error) {
+	if !shaPattern.MatchString(sha) {
+		return deployment.Commit{}, errors.New("requested commit SHA is invalid")
+	}
+	unlock := g.projectLock(projectID)
+	defer unlock()
+	env, cleanup, err := g.gitEnvironment(projectID)
+	if err != nil {
+		return deployment.Commit{}, err
+	}
+	defer cleanup()
+	cache := g.cachePath(projectID)
+	if err = g.updateCache(ctx, cache, repo, env); err != nil {
+		return deployment.Commit{}, err
+	}
+	if _, err = run(ctx, cache, env, "git", "cat-file", "-e", sha+"^{commit}"); err != nil {
+		return deployment.Commit{}, errors.New("requested commit is not available")
+	}
+	if _, err = run(ctx, cache, env, "git", "merge-base", "--is-ancestor", sha, "refs/heads/"+branch); err != nil {
+		return deployment.Commit{}, errors.New("requested commit is not reachable from the configured branch")
+	}
+	meta, err := run(ctx, cache, env, "git", "show", "-s", "--format=%s%n%an <%ae>", sha)
+	if err != nil {
+		return deployment.Commit{}, err
+	}
+	lines := strings.SplitN(strings.TrimSpace(meta), "\n", 2)
+	result := deployment.Commit{SHA: sha, Message: lines[0]}
+	if len(lines) == 2 {
+		result.Author = lines[1]
+	}
+	return result, nil
+}
+
 func (g *Git) Checkout(ctx context.Context, projectID, repo, sha, workspace string) error {
 	unlock := g.projectLock(projectID)
 	defer unlock()

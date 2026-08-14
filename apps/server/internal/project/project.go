@@ -27,40 +27,60 @@ type Step struct {
 }
 
 type Project struct {
-	ID                       string `json:"id"`
-	Name                     string `json:"name"`
-	Slug                     string `json:"slug"`
-	Description              string `json:"description"`
-	RepositoryURL            string `json:"repositoryUrl"`
-	Branch                   string `json:"branch"`
-	AuthType                 string `json:"authType"`
-	GitUsername              string `json:"gitUsername,omitempty"`
-	HasGitSecret             bool   `json:"hasGitSecret"`
-	HasSSHPrivateKey         bool   `json:"hasSshPrivateKey"`
-	SSHKnownHosts            string `json:"sshKnownHosts,omitempty"`
-	BuildSteps               []Step `json:"buildSteps"`
-	DeploySteps              []Step `json:"deploySteps"`
-	StepTimeoutSeconds       int    `json:"stepTimeoutSeconds"`
-	DeploymentTimeoutSeconds int    `json:"deploymentTimeoutSeconds"`
-	CreatedAt                string `json:"createdAt"`
-	UpdatedAt                string `json:"updatedAt"`
+	ID                         string `json:"id"`
+	Name                       string `json:"name"`
+	Slug                       string `json:"slug"`
+	Description                string `json:"description"`
+	RepositoryURL              string `json:"repositoryUrl"`
+	Branch                     string `json:"branch"`
+	AuthType                   string `json:"authType"`
+	GitUsername                string `json:"gitUsername,omitempty"`
+	HasGitSecret               bool   `json:"hasGitSecret"`
+	HasSSHPrivateKey           bool   `json:"hasSshPrivateKey"`
+	SSHKnownHosts              string `json:"sshKnownHosts,omitempty"`
+	BuildSteps                 []Step `json:"buildSteps"`
+	DeploySteps                []Step `json:"deploySteps"`
+	StepTimeoutSeconds         int    `json:"stepTimeoutSeconds"`
+	DeploymentTimeoutSeconds   int    `json:"deploymentTimeoutSeconds"`
+	HealthEnabled              bool   `json:"healthEnabled"`
+	HealthURL                  string `json:"healthUrl,omitempty"`
+	HealthInitialDelaySeconds  int    `json:"healthInitialDelaySeconds"`
+	HealthTimeoutSeconds       int    `json:"healthTimeoutSeconds"`
+	HealthRetries              int    `json:"healthRetries"`
+	HealthRetryIntervalSeconds int    `json:"healthRetryIntervalSeconds"`
+	HealthExpectedStatus       string `json:"healthExpectedStatus"`
+	AutoDeploy                 bool   `json:"autoDeploy"`
+	WebhookProvider            string `json:"webhookProvider"`
+	HasWebhookSecret           bool   `json:"hasWebhookSecret"`
+	CreatedAt                  string `json:"createdAt"`
+	UpdatedAt                  string `json:"updatedAt"`
 }
 
 type Input struct {
-	Name                     string `json:"name"`
-	Slug                     string `json:"slug"`
-	Description              string `json:"description"`
-	RepositoryURL            string `json:"repositoryUrl"`
-	Branch                   string `json:"branch"`
-	AuthType                 string `json:"authType"`
-	GitUsername              string `json:"gitUsername"`
-	GitSecret                string `json:"gitSecret"`
-	SSHPrivateKey            string `json:"sshPrivateKey"`
-	SSHKnownHosts            string `json:"sshKnownHosts"`
-	BuildSteps               []Step `json:"buildSteps"`
-	DeploySteps              []Step `json:"deploySteps"`
-	StepTimeoutSeconds       int    `json:"stepTimeoutSeconds"`
-	DeploymentTimeoutSeconds int    `json:"deploymentTimeoutSeconds"`
+	Name                       string `json:"name"`
+	Slug                       string `json:"slug"`
+	Description                string `json:"description"`
+	RepositoryURL              string `json:"repositoryUrl"`
+	Branch                     string `json:"branch"`
+	AuthType                   string `json:"authType"`
+	GitUsername                string `json:"gitUsername"`
+	GitSecret                  string `json:"gitSecret"`
+	SSHPrivateKey              string `json:"sshPrivateKey"`
+	SSHKnownHosts              string `json:"sshKnownHosts"`
+	BuildSteps                 []Step `json:"buildSteps"`
+	DeploySteps                []Step `json:"deploySteps"`
+	StepTimeoutSeconds         int    `json:"stepTimeoutSeconds"`
+	DeploymentTimeoutSeconds   int    `json:"deploymentTimeoutSeconds"`
+	HealthEnabled              bool   `json:"healthEnabled"`
+	HealthURL                  string `json:"healthUrl"`
+	HealthInitialDelaySeconds  int    `json:"healthInitialDelaySeconds"`
+	HealthTimeoutSeconds       int    `json:"healthTimeoutSeconds"`
+	HealthRetries              int    `json:"healthRetries"`
+	HealthRetryIntervalSeconds int    `json:"healthRetryIntervalSeconds"`
+	HealthExpectedStatus       string `json:"healthExpectedStatus"`
+	AutoDeploy                 bool   `json:"autoDeploy"`
+	WebhookProvider            string `json:"webhookProvider"`
+	WebhookSecret              string `json:"webhookSecret"`
 }
 
 type VariableInput struct {
@@ -94,6 +114,9 @@ func (s *Service) Create(ctx context.Context, in Input) (Project, error) {
 	if in.AuthType == "ssh" && (in.SSHPrivateKey == "" || strings.TrimSpace(in.SSHKnownHosts) == "") {
 		return Project{}, errors.New("SSH authentication requires a private key and known_hosts")
 	}
+	if in.AutoDeploy && in.WebhookSecret == "" {
+		return Project{}, errors.New("auto deploy requires a webhook secret")
+	}
 	id, _, err := auth.NewSessionToken()
 	if err != nil {
 		return Project{}, err
@@ -103,10 +126,17 @@ func (s *Service) Create(ctx context.Context, in Input) (Project, error) {
 	if err != nil {
 		return Project{}, err
 	}
+	var webhookCipher []byte
+	if in.WebhookSecret != "" {
+		webhookCipher, err = s.box.Encrypt([]byte(in.WebhookSecret), "project:"+id+":webhook-secret")
+		if err != nil {
+			return Project{}, err
+		}
+	}
 	build, _ := json.Marshal(in.BuildSteps)
 	deploy, _ := json.Marshal(in.DeploySteps)
 	now := time.Now().UTC().Format(time.RFC3339Nano)
-	_, err = s.db.ExecContext(ctx, `INSERT INTO projects(id,name,slug,description,repository_url,branch,auth_type,git_username,git_secret_cipher,ssh_private_key_cipher,ssh_known_hosts,build_steps_json,deploy_steps_json,step_timeout_seconds,deployment_timeout_seconds,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`, id, in.Name, in.Slug, in.Description, in.RepositoryURL, in.Branch, in.AuthType, in.GitUsername, gitCipher, keyCipher, in.SSHKnownHosts, string(build), string(deploy), in.StepTimeoutSeconds, in.DeploymentTimeoutSeconds, now, now)
+	_, err = s.db.ExecContext(ctx, `INSERT INTO projects(id,name,slug,description,repository_url,branch,auth_type,git_username,git_secret_cipher,ssh_private_key_cipher,ssh_known_hosts,build_steps_json,deploy_steps_json,step_timeout_seconds,deployment_timeout_seconds,health_enabled,health_url,health_initial_delay_seconds,health_timeout_seconds,health_retries,health_retry_interval_seconds,health_expected_status,auto_deploy,webhook_provider,webhook_secret_cipher,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`, id, in.Name, in.Slug, in.Description, in.RepositoryURL, in.Branch, in.AuthType, in.GitUsername, gitCipher, keyCipher, in.SSHKnownHosts, string(build), string(deploy), in.StepTimeoutSeconds, in.DeploymentTimeoutSeconds, in.HealthEnabled, in.HealthURL, in.HealthInitialDelaySeconds, in.HealthTimeoutSeconds, in.HealthRetries, in.HealthRetryIntervalSeconds, in.HealthExpectedStatus, in.AutoDeploy, in.WebhookProvider, webhookCipher, now, now)
 	if err != nil {
 		return Project{}, fmt.Errorf("create project: %w", err)
 	}
@@ -142,6 +172,9 @@ func (s *Service) Update(ctx context.Context, id string, in Input) (Project, err
 	if err != nil {
 		return Project{}, err
 	}
+	if in.AutoDeploy && in.WebhookSecret == "" && !existing.HasWebhookSecret {
+		return Project{}, errors.New("auto deploy requires a webhook secret")
+	}
 	var gitCipher, keyCipher any
 	if in.GitSecret != "" || in.SSHPrivateKey != "" {
 		gitCipher, keyCipher, err = s.encryptCredentials(id, in)
@@ -151,8 +184,8 @@ func (s *Service) Update(ctx context.Context, id string, in Input) (Project, err
 	}
 	build, _ := json.Marshal(in.BuildSteps)
 	deploy, _ := json.Marshal(in.DeploySteps)
-	query := `UPDATE projects SET name=?,slug=?,description=?,repository_url=?,branch=?,auth_type=?,git_username=?,ssh_known_hosts=?,build_steps_json=?,deploy_steps_json=?,step_timeout_seconds=?,deployment_timeout_seconds=?,updated_at=?`
-	args := []any{in.Name, in.Slug, in.Description, in.RepositoryURL, in.Branch, in.AuthType, in.GitUsername, in.SSHKnownHosts, string(build), string(deploy), in.StepTimeoutSeconds, in.DeploymentTimeoutSeconds, time.Now().UTC().Format(time.RFC3339Nano)}
+	query := `UPDATE projects SET name=?,slug=?,description=?,repository_url=?,branch=?,auth_type=?,git_username=?,ssh_known_hosts=?,build_steps_json=?,deploy_steps_json=?,step_timeout_seconds=?,deployment_timeout_seconds=?,health_enabled=?,health_url=?,health_initial_delay_seconds=?,health_timeout_seconds=?,health_retries=?,health_retry_interval_seconds=?,health_expected_status=?,auto_deploy=?,webhook_provider=?,updated_at=?`
+	args := []any{in.Name, in.Slug, in.Description, in.RepositoryURL, in.Branch, in.AuthType, in.GitUsername, in.SSHKnownHosts, string(build), string(deploy), in.StepTimeoutSeconds, in.DeploymentTimeoutSeconds, in.HealthEnabled, in.HealthURL, in.HealthInitialDelaySeconds, in.HealthTimeoutSeconds, in.HealthRetries, in.HealthRetryIntervalSeconds, in.HealthExpectedStatus, in.AutoDeploy, in.WebhookProvider, time.Now().UTC().Format(time.RFC3339Nano)}
 	if in.GitSecret != "" {
 		query += `,git_secret_cipher=?`
 		args = append(args, gitCipher)
@@ -164,6 +197,14 @@ func (s *Service) Update(ctx context.Context, id string, in Input) (Project, err
 		args = append(args, keyCipher)
 	} else if in.AuthType != "ssh" && existing.HasSSHPrivateKey {
 		query += `,ssh_private_key_cipher=NULL`
+	}
+	if in.WebhookSecret != "" {
+		cipher, e := s.box.Encrypt([]byte(in.WebhookSecret), "project:"+id+":webhook-secret")
+		if e != nil {
+			return Project{}, e
+		}
+		query += `,webhook_secret_cipher=?`
+		args = append(args, cipher)
 	}
 	query += ` WHERE id=? AND archived_at IS NULL`
 	args = append(args, id)
@@ -290,6 +331,21 @@ func validate(in *Input) error {
 	if in.DeploymentTimeoutSeconds == 0 {
 		in.DeploymentTimeoutSeconds = 3600
 	}
+	if in.HealthTimeoutSeconds == 0 {
+		in.HealthTimeoutSeconds = 5
+	}
+	if in.HealthRetries == 0 {
+		in.HealthRetries = 3
+	}
+	if in.HealthRetryIntervalSeconds == 0 {
+		in.HealthRetryIntervalSeconds = 2
+	}
+	if in.HealthExpectedStatus == "" {
+		in.HealthExpectedStatus = "200-299"
+	}
+	if in.WebhookProvider == "" {
+		in.WebhookProvider = "github"
+	}
 	if in.Name == "" || len(in.Name) > 128 {
 		return errors.New("project name is required and must not exceed 128 characters")
 	}
@@ -311,6 +367,21 @@ func validate(in *Input) error {
 	if in.StepTimeoutSeconds < 1 || in.DeploymentTimeoutSeconds < 1 || in.StepTimeoutSeconds > in.DeploymentTimeoutSeconds {
 		return errors.New("invalid timeout configuration")
 	}
+	if in.HealthEnabled {
+		u, err := url.Parse(in.HealthURL)
+		if err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Host == "" {
+			return errors.New("enabled health check requires a valid HTTP or HTTPS URL")
+		}
+		if in.HealthInitialDelaySeconds < 0 || in.HealthTimeoutSeconds < 1 || in.HealthRetries < 1 || in.HealthRetryIntervalSeconds < 0 {
+			return errors.New("invalid health check timing")
+		}
+		if _, _, err = parseStatusRange(in.HealthExpectedStatus); err != nil {
+			return err
+		}
+	}
+	if in.WebhookProvider != "github" && in.WebhookProvider != "gitlab" && in.WebhookProvider != "gitea" {
+		return errors.New("invalid webhook provider")
+	}
 	for _, steps := range [][]Step{in.BuildSteps, in.DeploySteps} {
 		for _, step := range steps {
 			if strings.TrimSpace(step.Name) == "" || strings.TrimSpace(step.Command) == "" {
@@ -329,14 +400,14 @@ func validRepository(value string) bool {
 	return err == nil && (u.Scheme == "https" || u.Scheme == "ssh") && u.Host != ""
 }
 
-const selectProject = `SELECT id,name,slug,description,repository_url,branch,auth_type,git_username,git_secret_cipher IS NOT NULL,ssh_private_key_cipher IS NOT NULL,ssh_known_hosts,build_steps_json,deploy_steps_json,step_timeout_seconds,deployment_timeout_seconds,created_at,updated_at FROM projects`
+const selectProject = `SELECT id,name,slug,description,repository_url,branch,auth_type,git_username,git_secret_cipher IS NOT NULL,ssh_private_key_cipher IS NOT NULL,ssh_known_hosts,build_steps_json,deploy_steps_json,step_timeout_seconds,deployment_timeout_seconds,health_enabled,health_url,health_initial_delay_seconds,health_timeout_seconds,health_retries,health_retry_interval_seconds,health_expected_status,auto_deploy,webhook_provider,webhook_secret_cipher IS NOT NULL,created_at,updated_at FROM projects`
 
 type scanner interface{ Scan(...any) error }
 
 func scanProject(row scanner) (Project, error) {
 	var p Project
 	var build, deploy string
-	err := row.Scan(&p.ID, &p.Name, &p.Slug, &p.Description, &p.RepositoryURL, &p.Branch, &p.AuthType, &p.GitUsername, &p.HasGitSecret, &p.HasSSHPrivateKey, &p.SSHKnownHosts, &build, &deploy, &p.StepTimeoutSeconds, &p.DeploymentTimeoutSeconds, &p.CreatedAt, &p.UpdatedAt)
+	err := row.Scan(&p.ID, &p.Name, &p.Slug, &p.Description, &p.RepositoryURL, &p.Branch, &p.AuthType, &p.GitUsername, &p.HasGitSecret, &p.HasSSHPrivateKey, &p.SSHKnownHosts, &build, &deploy, &p.StepTimeoutSeconds, &p.DeploymentTimeoutSeconds, &p.HealthEnabled, &p.HealthURL, &p.HealthInitialDelaySeconds, &p.HealthTimeoutSeconds, &p.HealthRetries, &p.HealthRetryIntervalSeconds, &p.HealthExpectedStatus, &p.AutoDeploy, &p.WebhookProvider, &p.HasWebhookSecret, &p.CreatedAt, &p.UpdatedAt)
 	if err != nil {
 		return Project{}, err
 	}
@@ -347,4 +418,12 @@ func scanProject(row scanner) (Project, error) {
 		return Project{}, err
 	}
 	return p, nil
+}
+
+func parseStatusRange(value string) (int, int, error) {
+	var low, high int
+	if _, err := fmt.Sscanf(value, "%d-%d", &low, &high); err != nil || low < 100 || high > 599 || low > high {
+		return 0, 0, errors.New("healthExpectedStatus must be a range such as 200-299")
+	}
+	return low, high, nil
 }

@@ -48,6 +48,7 @@ func New(dataDir string, max int64) (*Store, error) {
 func (s *Store) Path(projectID string, id int64) string {
 	return filepath.Join(s.root, projectID, fmt.Sprintf("%d.jsonl", id))
 }
+func(s *Store)Remove(projectID string,id int64)error{target:=s.Path(projectID,id);rel,err:=filepath.Rel(s.root,target);if err!=nil||filepath.IsAbs(rel)||rel==".."||strings.HasPrefix(rel,".."+string(os.PathSeparator)){return errors.New("refusing unsafe log cleanup")};return os.Remove(target)}
 func (s *Store) Open(projectID string, id int64, secrets []string) (*Writer, error) {
 	path := s.Path(projectID, id)
 	if err := os.MkdirAll(filepath.Dir(path), 0700); err != nil {

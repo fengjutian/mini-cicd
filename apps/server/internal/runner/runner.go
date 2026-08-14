@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"net/http"
 	"os"
 	"os/exec"
 	"runtime"
@@ -214,7 +215,72 @@ func (m *Manager) run(d deployment.Deployment) error {
 	if yes, _ := m.cancelled(d.ID); yes {
 		return context.Canceled
 	}
+	if err := m.runHealth(ctx, d.ID, writer); err != nil {
+		return err
+	}
 	return writer.WriteStep(0, "system", "deployment succeeded")
+}
+
+func (m *Manager) runHealth(ctx context.Context, id int64, w *logstore.Writer) error {
+	var enabled bool
+	var url, expected string
+	var initial, timeout, retries, interval int
+	if err := m.db.QueryRow(`SELECT health_enabled,health_url,health_initial_delay_seconds,health_timeout_seconds,health_retries,health_retry_interval_seconds,health_expected_status FROM deployments WHERE id=?`, id).Scan(&enabled, &url, &initial, &timeout, &retries, &interval, &expected); err != nil {
+		return err
+	}
+	if !enabled {
+		return nil
+	}
+	if err := waitContext(ctx, time.Duration(initial)*time.Second); err != nil {
+		return err
+	}
+	var low, high int
+	if _, err := fmt.Sscanf(expected, "%d-%d", &low, &high); err != nil {
+		return errors.New("invalid health status range snapshot")
+	}
+	client := &http.Client{Timeout: time.Duration(timeout) * time.Second, CheckRedirect: func(_ *http.Request, _ []*http.Request) error { return http.ErrUseLastResponse }}
+	var last string
+	for attempt := 1; attempt <= retries; attempt++ {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		_ = w.WriteStep(0, "health", "health check attempt "+fmt.Sprint(attempt)+" of "+fmt.Sprint(retries))
+		req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+		if err != nil {
+			return err
+		}
+		response, err := client.Do(req)
+		if err == nil {
+			_ = response.Body.Close()
+			if response.StatusCode >= low && response.StatusCode <= high {
+				_ = w.WriteStep(0, "health", "health check passed with HTTP "+fmt.Sprint(response.StatusCode))
+				return nil
+			}
+			last = "unexpected HTTP status " + fmt.Sprint(response.StatusCode)
+		} else {
+			last = err.Error()
+		}
+		_ = w.WriteStep(0, "health", "health check failed: "+last)
+		if attempt < retries {
+			if err = waitContext(ctx, time.Duration(interval)*time.Second); err != nil {
+				return err
+			}
+		}
+	}
+	return errors.New("health check failed after " + fmt.Sprint(retries) + " attempts: " + last)
+}
+func waitContext(ctx context.Context, d time.Duration) error {
+	if d <= 0 {
+		return ctx.Err()
+	}
+	timer := time.NewTimer(d)
+	defer timer.Stop()
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-timer.C:
+		return nil
+	}
 }
 func (m *Manager) environment(d deployment.Deployment) ([]string, []string, error) {
 	rows, err := m.db.Query(`SELECT name,is_secret,COALESCE(plain_value,''),cipher_value FROM deployment_variables WHERE deployment_id=?`, d.ID)

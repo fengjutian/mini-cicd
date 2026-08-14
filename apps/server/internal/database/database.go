@@ -151,5 +151,81 @@ CREATE TABLE IF NOT EXISTS project_locks (
 INSERT OR IGNORE INTO schema_migrations(version) VALUES (2);
 `
 	_, err = db.Exec(v2)
+	if err != nil {
+		return err
+	}
+	columns := []struct{ table, name, definition string }{
+		{"projects", "health_enabled", "INTEGER NOT NULL DEFAULT 0 CHECK(health_enabled IN (0,1))"},
+		{"projects", "health_url", "TEXT NOT NULL DEFAULT ''"},
+		{"projects", "health_initial_delay_seconds", "INTEGER NOT NULL DEFAULT 0"},
+		{"projects", "health_timeout_seconds", "INTEGER NOT NULL DEFAULT 5"},
+		{"projects", "health_retries", "INTEGER NOT NULL DEFAULT 3"},
+		{"projects", "health_retry_interval_seconds", "INTEGER NOT NULL DEFAULT 2"},
+		{"projects", "health_expected_status", "TEXT NOT NULL DEFAULT '200-299'"},
+		{"projects", "auto_deploy", "INTEGER NOT NULL DEFAULT 0 CHECK(auto_deploy IN (0,1))"},
+		{"projects", "webhook_provider", "TEXT NOT NULL DEFAULT 'github'"},
+		{"projects", "webhook_secret_cipher", "BLOB"},
+		{"deployments", "health_enabled", "INTEGER NOT NULL DEFAULT 0"},
+		{"deployments", "health_url", "TEXT NOT NULL DEFAULT ''"},
+		{"deployments", "health_initial_delay_seconds", "INTEGER NOT NULL DEFAULT 0"},
+		{"deployments", "health_timeout_seconds", "INTEGER NOT NULL DEFAULT 5"},
+		{"deployments", "health_retries", "INTEGER NOT NULL DEFAULT 3"},
+		{"deployments", "health_retry_interval_seconds", "INTEGER NOT NULL DEFAULT 2"},
+		{"deployments", "health_expected_status", "TEXT NOT NULL DEFAULT '200-299'"},
+	}
+	for _, column := range columns {
+		if err = ensureColumn(db, column.table, column.name, column.definition); err != nil {
+			return err
+		}
+	}
+	const v3 = `
+CREATE TABLE IF NOT EXISTS webhook_deliveries (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+    provider TEXT NOT NULL,
+    delivery_id TEXT NOT NULL,
+    event_type TEXT NOT NULL,
+    accepted INTEGER NOT NULL CHECK(accepted IN (0,1)),
+    rejection_reason TEXT NOT NULL DEFAULT '',
+    deployment_id INTEGER REFERENCES deployments(id),
+    commit_sha TEXT NOT NULL DEFAULT '',
+    received_at TEXT NOT NULL,
+    UNIQUE(provider,delivery_id)
+);
+CREATE INDEX IF NOT EXISTS idx_webhook_deliveries_project ON webhook_deliveries(project_id,received_at DESC);
+INSERT OR IGNORE INTO schema_migrations(version) VALUES (3);`
+	_, err = db.Exec(v3)
+	if err != nil {
+		return err
+	}
+	return ensureColumn(db, "webhook_deliveries", "commit_sha", "TEXT NOT NULL DEFAULT ''")
+}
+
+func ensureColumn(db *sql.DB, table, name, definition string) error {
+	rows, err := db.Query(`PRAGMA table_info(` + table + `)`)
+	if err != nil {
+		return err
+	}
+	found := false
+	for rows.Next() {
+		var cid int
+		var column, kind string
+		var notNull, pk int
+		var defaultValue any
+		if err = rows.Scan(&cid, &column, &kind, &notNull, &defaultValue, &pk); err != nil {
+			rows.Close()
+			return err
+		}
+		if column == name {
+			found = true
+		}
+	}
+	if err = rows.Close(); err != nil {
+		return err
+	}
+	if found {
+		return nil
+	}
+	_, err = db.Exec(`ALTER TABLE ` + table + ` ADD COLUMN ` + name + ` ` + definition)
 	return err
 }

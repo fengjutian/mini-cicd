@@ -38,6 +38,36 @@ func (s *Server) getDeployment(w http.ResponseWriter, r *http.Request) {
 	}
 	writeJSON(w, http.StatusOK, d)
 }
+func (s *Server) deploymentSteps(w http.ResponseWriter, r *http.Request) {
+	id, ok := deploymentID(w, r)
+	if !ok {
+		return
+	}
+	items, err := s.deps.Steps(r.Context(), id)
+	if err != nil {
+		s.deploymentError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"items": items})
+}
+func (s *Server) redeployDeployment(w http.ResponseWriter, r *http.Request) {
+	id, ok := deploymentID(w, r)
+	if !ok {
+		return
+	}
+	source, err := s.deps.Get(r.Context(), id)
+	if err != nil {
+		s.deploymentError(w, err)
+		return
+	}
+	d, err := s.deps.CreateAtCommit(r.Context(), source.ProjectID, "redeploy", source.CommitSHA)
+	if err != nil {
+		s.deploymentError(w, err)
+		return
+	}
+	s.runner.Wake()
+	writeJSON(w, http.StatusCreated, d)
+}
 func (s *Server) cancelDeployment(w http.ResponseWriter, r *http.Request) {
 	id, ok := deploymentID(w, r)
 	if !ok {

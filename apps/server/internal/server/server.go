@@ -42,15 +42,19 @@ type user struct {
 }
 
 type Server struct {
-	db       *sql.DB
-	cfg      config.Config
-	logger   *slog.Logger
-	limiter  *loginLimiter
-	projects *project.Service
-	deps     *deployment.Service
-	runner   *runner.Manager
-	logs     *logstore.Store
-	handler  http.Handler
+	db            *sql.DB
+	cfg           config.Config
+	logger        *slog.Logger
+	limiter       *loginLimiter
+	projects      *project.Service
+	deps          *deployment.Service
+	runner        *runner.Manager
+	logs          *logstore.Store
+	box           *secret.Box
+	handler       http.Handler
+	webhookCtx    context.Context
+	webhookCancel context.CancelFunc
+	webhookWG     sync.WaitGroup
 }
 
 func New(db *sql.DB, cfg config.Config, logger *slog.Logger) (*Server, error) {
@@ -60,7 +64,7 @@ func New(db *sql.DB, cfg config.Config, logger *slog.Logger) (*Server, error) {
 	}
 	if !box.Available() {
 		var encrypted int
-		if err := db.QueryRow(`SELECT EXISTS(SELECT 1 FROM project_variables WHERE cipher_value IS NOT NULL UNION ALL SELECT 1 FROM projects WHERE git_secret_cipher IS NOT NULL OR ssh_private_key_cipher IS NOT NULL)`).Scan(&encrypted); err != nil {
+		if err := db.QueryRow(`SELECT EXISTS(SELECT 1 FROM project_variables WHERE cipher_value IS NOT NULL UNION ALL SELECT 1 FROM projects WHERE git_secret_cipher IS NOT NULL OR ssh_private_key_cipher IS NOT NULL OR webhook_secret_cipher IS NOT NULL)`).Scan(&encrypted); err != nil {
 			return nil, err
 		}
 		if encrypted != 0 {
@@ -77,7 +81,8 @@ func New(db *sql.DB, cfg config.Config, logger *slog.Logger) (*Server, error) {
 	if err != nil {
 		return nil, err
 	}
-	s := &Server{db: db, cfg: cfg, logger: logger, limiter: newLoginLimiter(), projects: project.New(db, box), deps: deps, logs: logs}
+	s := &Server{db: db, cfg: cfg, logger: logger, limiter: newLoginLimiter(), projects: project.New(db, box), deps: deps, logs: logs, box: box}
+	s.webhookCtx, s.webhookCancel = context.WithCancel(context.Background())
 	s.runner = runner.New(db, deps, git, spaces, logs, box, cfg.Shell, cfg.GlobalParallel, cfg.CancelGrace, logger)
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /api/v1/status", s.status)
@@ -96,17 +101,22 @@ func New(db *sql.DB, cfg config.Config, logger *slog.Logger) (*Server, error) {
 	mux.HandleFunc("POST /api/v1/projects/{id}/deployments", s.requireAuth(s.createDeployment))
 	mux.HandleFunc("GET /api/v1/projects/{id}/deployments", s.requireAuth(s.listDeployments))
 	mux.HandleFunc("GET /api/v1/deployments/{id}", s.requireAuth(s.getDeployment))
+	mux.HandleFunc("GET /api/v1/deployments/{id}/steps", s.requireAuth(s.deploymentSteps))
 	mux.HandleFunc("POST /api/v1/deployments/{id}/cancel", s.requireAuth(s.cancelDeployment))
+	mux.HandleFunc("POST /api/v1/deployments/{id}/redeploy", s.requireAuth(s.redeployDeployment))
 	mux.HandleFunc("GET /api/v1/deployments/{id}/logs", s.requireAuth(s.deploymentLogs))
 	mux.HandleFunc("GET /healthz", s.health)
+	mux.HandleFunc("POST /api/v1/webhooks/{projectID}/{provider}", s.webhook)
+	mux.HandleFunc("GET /api/v1/dashboard", s.requireAuth(s.dashboard))
 	mux.HandleFunc("GET /", s.index)
 	s.handler = s.securityHeaders(s.sameOrigin(s.limitBody(mux)))
 	s.runner.Start()
+	s.recoverWebhooks()
 	return s, nil
 }
 
 func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) { s.handler.ServeHTTP(w, r) }
-func (s *Server) Close()                                           { s.runner.Stop() }
+func (s *Server) Close()                                           { s.webhookCancel(); s.webhookWG.Wait(); s.runner.Stop() }
 
 func (s *Server) health(w http.ResponseWriter, _ *http.Request) {
 	if err := s.db.Ping(); err != nil {

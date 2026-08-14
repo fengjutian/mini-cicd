@@ -15,6 +15,26 @@ type Commit struct{ SHA, Message, Author string }
 type Resolver interface {
 	Resolve(context.Context, string, string, string) (Commit, error)
 }
+type FixedResolver interface {
+	ResolveCommit(context.Context, string, string, string, string) (Commit, error)
+}
+type projectSnapshot struct {
+	repo, branch, buildJSON, deployJSON, healthURL, healthExpected string
+	healthEnabled                                                  bool
+	healthInitial, healthTimeout, healthRetries, healthInterval    int
+}
+type Step struct {
+	ID               int64   `json:"id"`
+	Sequence         int     `json:"sequence"`
+	Phase            string  `json:"phase"`
+	Name             string  `json:"name"`
+	Command          string  `json:"command"`
+	WorkingDirectory string  `json:"workingDirectory"`
+	Status           string  `json:"status"`
+	ExitCode         *int    `json:"exitCode"`
+	StartedAt        *string `json:"startedAt"`
+	FinishedAt       *string `json:"finishedAt"`
+}
 type Service struct {
 	db       *sql.DB
 	resolver Resolver
@@ -47,14 +67,50 @@ func (s *Service) Create(ctx context.Context, projectID, trigger string) (Deploy
 	if trigger != "manual" && trigger != "webhook" && trigger != "redeploy" {
 		return Deployment{}, errors.New("invalid trigger type")
 	}
-	var repo, branch string
-	if err := s.db.QueryRowContext(ctx, `SELECT repository_url,branch FROM projects WHERE id=? AND archived_at IS NULL`, projectID).Scan(&repo, &branch); err != nil {
+	snapshot, err := s.projectSnapshot(ctx, projectID)
+	if err != nil {
 		return Deployment{}, err
 	}
-	commit, err := s.resolver.Resolve(ctx, projectID, repo, branch)
+	commit, err := s.resolver.Resolve(ctx, projectID, snapshot.repo, snapshot.branch)
 	if err != nil {
 		return Deployment{}, fmt.Errorf("resolve commit: %w", err)
 	}
+	if len(commit.SHA) != 40 {
+		return Deployment{}, errors.New("resolver returned an invalid commit SHA")
+	}
+	return s.createResolved(ctx, projectID, trigger, snapshot, commit)
+}
+
+func (s *Service) CreateAtCommit(ctx context.Context, projectID, trigger, sha string) (Deployment, error) {
+	if trigger != "webhook" && trigger != "redeploy" {
+		return Deployment{}, errors.New("fixed commit is only valid for webhook or redeploy")
+	}
+	snapshot, err := s.projectSnapshot(ctx, projectID)
+	if err != nil {
+		return Deployment{}, err
+	}
+	var commit Commit
+	if fixed, ok := s.resolver.(FixedResolver); ok {
+		commit, err = fixed.ResolveCommit(ctx, projectID, snapshot.repo, snapshot.branch, sha)
+	} else {
+		commit, err = s.resolver.Resolve(ctx, projectID, snapshot.repo, snapshot.branch)
+		if err == nil && commit.SHA != sha {
+			err = errors.New("requested commit does not match resolved branch")
+		}
+	}
+	if err != nil {
+		return Deployment{}, fmt.Errorf("resolve commit: %w", err)
+	}
+	return s.createResolved(ctx, projectID, trigger, snapshot, commit)
+}
+
+func (s *Service) projectSnapshot(ctx context.Context, projectID string) (projectSnapshot, error) {
+	var p projectSnapshot
+	err := s.db.QueryRowContext(ctx, `SELECT repository_url,branch,build_steps_json,deploy_steps_json,health_enabled,health_url,health_initial_delay_seconds,health_timeout_seconds,health_retries,health_retry_interval_seconds,health_expected_status FROM projects WHERE id=? AND archived_at IS NULL`, projectID).Scan(&p.repo, &p.branch, &p.buildJSON, &p.deployJSON, &p.healthEnabled, &p.healthURL, &p.healthInitial, &p.healthTimeout, &p.healthRetries, &p.healthInterval, &p.healthExpected)
+	return p, err
+}
+
+func (s *Service) createResolved(ctx context.Context, projectID, trigger string, snapshot projectSnapshot, commit Commit) (Deployment, error) {
 	if len(commit.SHA) != 40 {
 		return Deployment{}, errors.New("resolver returned an invalid commit SHA")
 	}
@@ -64,7 +120,7 @@ func (s *Service) Create(ctx context.Context, projectID, trigger string) (Deploy
 	}
 	defer tx.Rollback()
 	now := time.Now().UTC().Format(time.RFC3339Nano)
-	res, err := tx.ExecContext(ctx, `INSERT INTO deployments(project_id,status,trigger_type,branch,commit_sha,commit_message,commit_author,queued_at,created_at) VALUES(?,'queued',?,?,?,?,?,?,?)`, projectID, trigger, branch, commit.SHA, commit.Message, commit.Author, now, now)
+	res, err := tx.ExecContext(ctx, `INSERT INTO deployments(project_id,status,trigger_type,branch,commit_sha,commit_message,commit_author,queued_at,created_at,health_enabled,health_url,health_initial_delay_seconds,health_timeout_seconds,health_retries,health_retry_interval_seconds,health_expected_status) VALUES(?,'queued',?,?,?,?,?,?,?,?,?,?,?,?,?,?)`, projectID, trigger, snapshot.branch, commit.SHA, commit.Message, commit.Author, now, now, snapshot.healthEnabled, snapshot.healthURL, snapshot.healthInitial, snapshot.healthTimeout, snapshot.healthRetries, snapshot.healthInterval, snapshot.healthExpected)
 	if err != nil {
 		return Deployment{}, err
 	}
@@ -75,12 +131,8 @@ func (s *Service) Create(ctx context.Context, projectID, trigger string) (Deploy
 	if _, err = tx.ExecContext(ctx, `INSERT INTO deployment_variables(deployment_id,name,is_secret,plain_value,cipher_value,source_version) SELECT ?,name,is_secret,plain_value,cipher_value,version FROM project_variables WHERE project_id=? AND replaced_at IS NULL`, id, projectID); err != nil {
 		return Deployment{}, err
 	}
-	var buildJSON, deployJSON string
-	if err = tx.QueryRowContext(ctx, `SELECT build_steps_json,deploy_steps_json FROM projects WHERE id=?`, projectID).Scan(&buildJSON, &deployJSON); err != nil {
-		return Deployment{}, err
-	}
 	var build, deploy []project.Step
-	if json.Unmarshal([]byte(buildJSON), &build) != nil || json.Unmarshal([]byte(deployJSON), &deploy) != nil {
+	if json.Unmarshal([]byte(snapshot.buildJSON), &build) != nil || json.Unmarshal([]byte(snapshot.deployJSON), &deploy) != nil {
 		return Deployment{}, errors.New("invalid stored pipeline")
 	}
 	seq := 0
@@ -99,6 +151,23 @@ func (s *Service) Create(ctx context.Context, projectID, trigger string) (Deploy
 		return Deployment{}, err
 	}
 	return s.Get(ctx, id)
+}
+
+func (s *Service) Steps(ctx context.Context, id int64) ([]Step, error) {
+	rows, err := s.db.QueryContext(ctx, `SELECT id,sequence,phase,name,command_text,working_directory,status,exit_code,started_at,finished_at FROM deployment_steps WHERE deployment_id=? ORDER BY sequence`, id)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := []Step{}
+	for rows.Next() {
+		var x Step
+		if err = rows.Scan(&x.ID, &x.Sequence, &x.Phase, &x.Name, &x.Command, &x.WorkingDirectory, &x.Status, &x.ExitCode, &x.StartedAt, &x.FinishedAt); err != nil {
+			return nil, err
+		}
+		out = append(out, x)
+	}
+	return out, rows.Err()
 }
 
 func (s *Service) Get(ctx context.Context, id int64) (Deployment, error) {
