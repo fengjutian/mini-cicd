@@ -88,6 +88,12 @@ func (s *Service) Create(ctx context.Context, in Input) (Project, error) {
 	if err := validate(&in); err != nil {
 		return Project{}, err
 	}
+	if in.AuthType == "https" && (in.GitUsername == "" || in.GitSecret == "") {
+		return Project{}, errors.New("HTTPS authentication requires username and token")
+	}
+	if in.AuthType == "ssh" && (in.SSHPrivateKey == "" || strings.TrimSpace(in.SSHKnownHosts) == "") {
+		return Project{}, errors.New("SSH authentication requires a private key and known_hosts")
+	}
 	id, _, err := auth.NewSessionToken()
 	if err != nil {
 		return Project{}, err
@@ -298,6 +304,9 @@ func validate(in *Input) error {
 	}
 	if in.AuthType != "none" && in.AuthType != "https" && in.AuthType != "ssh" {
 		return errors.New("invalid auth type")
+	}
+	if in.AuthType == "ssh" && strings.TrimSpace(in.SSHKnownHosts) == "" {
+		return errors.New("SSH authentication requires known_hosts")
 	}
 	if in.StepTimeoutSeconds < 1 || in.DeploymentTimeoutSeconds < 1 || in.StepTimeoutSeconds > in.DeploymentTimeoutSeconds {
 		return errors.New("invalid timeout configuration")

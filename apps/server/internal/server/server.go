@@ -18,8 +18,13 @@ import (
 
 	"github.com/charlesfeng/mini-cicd/apps/server/internal/auth"
 	"github.com/charlesfeng/mini-cicd/apps/server/internal/config"
+	"github.com/charlesfeng/mini-cicd/apps/server/internal/deployment"
+	"github.com/charlesfeng/mini-cicd/apps/server/internal/gitops"
+	"github.com/charlesfeng/mini-cicd/apps/server/internal/logstore"
 	"github.com/charlesfeng/mini-cicd/apps/server/internal/project"
+	"github.com/charlesfeng/mini-cicd/apps/server/internal/runner"
 	"github.com/charlesfeng/mini-cicd/apps/server/internal/secret"
+	"github.com/charlesfeng/mini-cicd/apps/server/internal/workspace"
 )
 
 const sessionCookie = "minicicd_session"
@@ -42,14 +47,38 @@ type Server struct {
 	logger   *slog.Logger
 	limiter  *loginLimiter
 	projects *project.Service
+	deps     *deployment.Service
+	runner   *runner.Manager
+	logs     *logstore.Store
+	handler  http.Handler
 }
 
-func New(db *sql.DB, cfg config.Config, logger *slog.Logger) http.Handler {
+func New(db *sql.DB, cfg config.Config, logger *slog.Logger) (*Server, error) {
 	box, err := secret.New(cfg.MasterKey)
 	if err != nil {
-		panic(err)
+		return nil, err
 	}
-	s := &Server{db: db, cfg: cfg, logger: logger, limiter: newLoginLimiter(), projects: project.New(db, box)}
+	if !box.Available() {
+		var encrypted int
+		if err := db.QueryRow(`SELECT EXISTS(SELECT 1 FROM project_variables WHERE cipher_value IS NOT NULL UNION ALL SELECT 1 FROM projects WHERE git_secret_cipher IS NOT NULL OR ssh_private_key_cipher IS NOT NULL)`).Scan(&encrypted); err != nil {
+			return nil, err
+		}
+		if encrypted != 0 {
+			return nil, errors.New("MINICICD_MASTER_KEY is required because encrypted secrets already exist")
+		}
+	}
+	git := gitops.New(cfg.DataDir, db, box)
+	deps := deployment.New(db, git)
+	spaces, err := workspace.New(cfg.DataDir)
+	if err != nil {
+		return nil, err
+	}
+	logs, err := logstore.New(cfg.DataDir, cfg.LogMaxBytes)
+	if err != nil {
+		return nil, err
+	}
+	s := &Server{db: db, cfg: cfg, logger: logger, limiter: newLoginLimiter(), projects: project.New(db, box), deps: deps, logs: logs}
+	s.runner = runner.New(db, deps, git, spaces, logs, box, cfg.Shell, cfg.GlobalParallel, cfg.CancelGrace, logger)
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /api/v1/status", s.status)
 	mux.HandleFunc("POST /api/v1/setup", s.setup)
@@ -64,10 +93,20 @@ func New(db *sql.DB, cfg config.Config, logger *slog.Logger) http.Handler {
 	mux.HandleFunc("GET /api/v1/projects/{id}/variables", s.requireAuth(s.listVariables))
 	mux.HandleFunc("PUT /api/v1/projects/{id}/variables/{name}", s.requireAuth(s.putVariable))
 	mux.HandleFunc("DELETE /api/v1/projects/{id}/variables/{name}", s.requireAuth(s.deleteVariable))
+	mux.HandleFunc("POST /api/v1/projects/{id}/deployments", s.requireAuth(s.createDeployment))
+	mux.HandleFunc("GET /api/v1/projects/{id}/deployments", s.requireAuth(s.listDeployments))
+	mux.HandleFunc("GET /api/v1/deployments/{id}", s.requireAuth(s.getDeployment))
+	mux.HandleFunc("POST /api/v1/deployments/{id}/cancel", s.requireAuth(s.cancelDeployment))
+	mux.HandleFunc("GET /api/v1/deployments/{id}/logs", s.requireAuth(s.deploymentLogs))
 	mux.HandleFunc("GET /healthz", s.health)
 	mux.HandleFunc("GET /", s.index)
-	return s.securityHeaders(s.sameOrigin(s.limitBody(mux)))
+	s.handler = s.securityHeaders(s.sameOrigin(s.limitBody(mux)))
+	s.runner.Start()
+	return s, nil
 }
+
+func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) { s.handler.ServeHTTP(w, r) }
+func (s *Server) Close()                                           { s.runner.Stop() }
 
 func (s *Server) health(w http.ResponseWriter, _ *http.Request) {
 	if err := s.db.Ping(); err != nil {

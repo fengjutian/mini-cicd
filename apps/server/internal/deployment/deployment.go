@@ -185,6 +185,11 @@ func (s *Service) Finish(ctx context.Context, id int64, status, message string) 
 	if _, err = tx.ExecContext(ctx, `UPDATE deployments SET status=?,error_summary=?,finished_at=? WHERE id=? AND status NOT IN ('succeeded','failed','cancelled','timed_out')`, status, message, now, id); err != nil {
 		return err
 	}
+	if status != "succeeded" {
+		if _, err = tx.ExecContext(ctx, `UPDATE deployment_steps SET status='skipped',finished_at=? WHERE deployment_id=? AND status='pending'`, now, id); err != nil {
+			return err
+		}
+	}
 	if _, err = tx.ExecContext(ctx, `DELETE FROM project_locks WHERE deployment_id=?`, id); err != nil {
 		return err
 	}

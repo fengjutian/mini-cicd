@@ -3,11 +3,13 @@ package server
 import (
 	"bytes"
 	"encoding/json"
+	"fmt"
 	"io"
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -25,8 +27,13 @@ func newTestServer(t *testing.T) http.Handler {
 	if err := database.Migrate(db); err != nil {
 		t.Fatal(err)
 	}
-	cfg := config.Config{SessionTTL: time.Hour}
-	return New(db, cfg, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	cfg := config.Config{SessionTTL: time.Hour, DataDir: t.TempDir(), GlobalParallel: 1, Shell: "powershell.exe", LogMaxBytes: 1024 * 1024, CancelGrace: time.Second}
+	s, err := New(db, cfg, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(s.Close)
+	return s
 }
 
 func requestJSON(t *testing.T, handler http.Handler, method, path string, body any, cookies ...*http.Cookie) *httptest.ResponseRecorder {
@@ -120,5 +127,41 @@ func TestRejectsCrossOriginMutation(t *testing.T) {
 	handler.ServeHTTP(rec, req)
 	if rec.Code != http.StatusForbidden {
 		t.Fatalf("cross-origin mutation returned %d: %s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestSSEResumesAfterLastEventID(t *testing.T) {
+	handler := newTestServer(t)
+	s := handler.(*Server)
+	setup := requestJSON(t, handler, http.MethodPost, "/api/v1/setup", map[string]string{"email": "owner@example.com", "username": "owner", "password": "correct horse battery staple", "confirmPassword": "correct horse battery staple"})
+	cookie := setup.Result().Cookies()[0]
+	now := time.Now().UTC().Format(time.RFC3339Nano)
+	_, err := s.db.Exec(`INSERT INTO projects(id,name,slug,repository_url,branch,created_at,updated_at) VALUES('p','p','p','https://example/repo','main',?,?)`, now, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	res, err := s.db.Exec(`INSERT INTO deployments(project_id,status,trigger_type,branch,commit_sha,created_at,finished_at) VALUES('p','succeeded','manual','main','0123456789012345678901234567890123456789',?,?)`, now, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	id, _ := res.LastInsertId()
+	w, err := s.logs.Open("p", id, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = w.WriteStep(1, "output", "first")
+	_ = w.WriteStep(1, "output", "second")
+	_ = w.Close()
+	req := httptest.NewRequest(http.MethodGet, fmt.Sprintf("/api/v1/deployments/%d/logs", id), nil)
+	req.Header.Set("Last-Event-ID", "1")
+	req.AddCookie(cookie)
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	body := rec.Body.String()
+	if strings.Contains(body, "first") || !strings.Contains(body, "second") || !strings.Contains(body, "id: 2") {
+		t.Fatalf("unexpected SSE body: %s", body)
 	}
 }

@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 )
 
@@ -17,6 +18,13 @@ func New(dataDir string) (*Manager, error) {
 	}
 	if err = os.MkdirAll(root, 0700); err != nil {
 		return nil, err
+	}
+	if runtime.GOOS != "windows" {
+		if resolved, e := filepath.EvalSymlinks(root); e == nil {
+			root = resolved
+		} else {
+			return nil, e
+		}
 	}
 	return &Manager{root: root}, nil
 }

@@ -19,6 +19,8 @@ type Config struct {
 	MasterKey      []byte
 	GlobalParallel int
 	Shell          string
+	LogMaxBytes    int64
+	CancelGrace    time.Duration
 }
 
 func Load() (Config, error) {
@@ -47,6 +49,14 @@ func Load() (Config, error) {
 	if err != nil || parallel < 1 {
 		return Config{}, fmt.Errorf("MINICICD_GLOBAL_PARALLEL must be a positive integer")
 	}
+	logMax, err := strconv.ParseInt(env("MINICICD_LOG_MAX_BYTES", "10485760"), 10, 64)
+	if err != nil || logMax < 1024 {
+		return Config{}, fmt.Errorf("MINICICD_LOG_MAX_BYTES must be at least 1024")
+	}
+	grace, err := time.ParseDuration(env("MINICICD_CANCEL_GRACE", "10s"))
+	if err != nil || grace <= 0 {
+		return Config{}, fmt.Errorf("MINICICD_CANCEL_GRACE must be positive")
+	}
 	var masterKey []byte
 	if encoded := os.Getenv("MINICICD_MASTER_KEY"); encoded != "" {
 		masterKey, err = base64.RawStdEncoding.DecodeString(encoded)
@@ -65,6 +75,8 @@ func Load() (Config, error) {
 		MasterKey:      masterKey,
 		GlobalParallel: parallel,
 		Shell:          env("MINICICD_SHELL", defaultShell()),
+		LogMaxBytes:    logMax,
+		CancelGrace:    grace,
 	}, nil
 }
 

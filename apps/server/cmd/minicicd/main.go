@@ -35,7 +35,12 @@ func main() {
 		os.Exit(1)
 	}
 
-	handler := webserver.New(db, cfg, logger)
+	handler, err := webserver.New(db, cfg, logger)
+	if err != nil {
+		logger.Error("initialize server", "error", err)
+		os.Exit(1)
+	}
+	defer handler.Close()
 	httpServer := &http.Server{
 		Addr:              cfg.ListenAddr,
 		Handler:           handler,
