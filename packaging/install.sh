@@ -17,6 +17,7 @@ if [[ ! -f /etc/minicicd/minicicd.env ]]; then
   printf 'MINICICD_LISTEN_ADDR=127.0.0.1:8080\nMINICICD_DATA_DIR=/var/lib/minicicd\nMINICICD_MASTER_KEY=%s\nMINICICD_SECURE_COOKIES=false\nMINICICD_RUNNER_ENDPOINT=/run/minicicd/runner.sock\nMINICICD_RUNNER_WORKSPACE_DIR=/var/lib/minicicd-workspaces\n' "$key" >/etc/minicicd/minicicd.env
   chmod 0600 /etc/minicicd/minicicd.env
 fi
+grep -q '^MINICICD_RUNNER_ENDPOINT=' /etc/minicicd/minicicd.env || printf 'MINICICD_RUNNER_ENDPOINT=/run/minicicd/runner.sock\nMINICICD_RUNNER_WORKSPACE_DIR=/var/lib/minicicd-workspaces\n' >>/etc/minicicd/minicicd.env
 printf 'MINICICD_RUNNER_SOCKET=/run/minicicd/runner.sock\nMINICICD_RUNNER_WORKSPACE_DIR=/var/lib/minicicd-workspaces\nMINICICD_RUNNER_SOCKET_GID=%s\nMINICICD_RUNNER_JOB_UID=%s\nMINICICD_RUNNER_JOB_GID=%s\nMINICICD_SHELL=/bin/bash\n' "$(getent group minicicd-control | cut -d: -f3)" "$(id -u minicicd-job)" "$(getent group minicicd-workspace | cut -d: -f3)" >/etc/minicicd/runner.env
 chmod 0600 /etc/minicicd/runner.env
 install -m 0644 "$(dirname "$0")/minicicd.service" /etc/systemd/system/minicicd.service

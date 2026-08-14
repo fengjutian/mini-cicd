@@ -179,6 +179,11 @@ func (m *Manager) run(d deployment.Deployment) error {
 		}
 		return err
 	}
+	if m.endpoint != "" {
+		if err = workspace.MakeShared(space); err != nil {
+			return fmt.Errorf("prepare isolated runner workspace: %w", err)
+		}
+	}
 	res, err := m.db.Exec(`UPDATE deployments SET status='running' WHERE id=? AND status='preparing'`, d.ID)
 	if err != nil {
 		return err

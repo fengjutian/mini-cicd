@@ -42,3 +42,30 @@ func TestCreateRefusesDirty(t *testing.T) {
 		t.Fatal("accepted dirty workspace")
 	}
 }
+
+func TestMakeSharedDoesNotFollowSymlink(t *testing.T) {
+	root := t.TempDir()
+	file := filepath.Join(root, "file")
+	if err := os.WriteFile(file, []byte("x"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	outside := filepath.Join(t.TempDir(), "outside")
+	if err := os.WriteFile(outside, []byte("x"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(outside, filepath.Join(root, "link")); err != nil {
+		t.Skip("symlinks unavailable")
+	}
+	before, _ := os.Stat(outside)
+	if err := MakeShared(root); err != nil {
+		t.Fatal(err)
+	}
+	after, _ := os.Stat(outside)
+	if before.Mode().Perm() != after.Mode().Perm() {
+		t.Fatal("followed workspace symlink")
+	}
+	inside, _ := os.Stat(file)
+	if inside.Mode().Perm()&0o060 != 0o060 {
+		t.Fatalf("group access not granted: %o", inside.Mode().Perm())
+	}
+}

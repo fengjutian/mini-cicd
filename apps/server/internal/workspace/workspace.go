@@ -71,6 +71,35 @@ func Resolve(root, relative string) (string, error) {
 	}
 	return resolved, nil
 }
+
+// MakeShared grants the isolated job user's shared group write access without
+// following repository symlinks. It must only be used on a validated workspace.
+func MakeShared(root string) error {
+	rootAbs, err := filepath.Abs(root)
+	if err != nil {
+		return err
+	}
+	return filepath.WalkDir(rootAbs, func(path string, entry os.DirEntry, walkErr error) error {
+		if walkErr != nil {
+			return walkErr
+		}
+		if !within(rootAbs, path) {
+			return errors.New("workspace permission target escaped root")
+		}
+		info, err := entry.Info()
+		if err != nil {
+			return err
+		}
+		if info.Mode()&os.ModeSymlink != 0 {
+			return nil
+		}
+		mode := os.FileMode(0o660)
+		if entry.IsDir() || info.Mode()&0o111 != 0 {
+			mode = 0o770
+		}
+		return os.Chmod(path, mode)
+	})
+}
 func (m *Manager) Remove(projectID string, deploymentID int64) error {
 	if !safeID(projectID) {
 		return errors.New("invalid project ID")
