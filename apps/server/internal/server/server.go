@@ -12,6 +12,7 @@ import (
 	"net/http"
 	"net/mail"
 	"net/url"
+	"path/filepath"
 	"strings"
 	"sync"
 	"time"
@@ -29,6 +30,8 @@ import (
 )
 
 const sessionCookie = "minicicd_session"
+
+var Version = "dev"
 
 type contextKey string
 
@@ -86,7 +89,7 @@ func New(db *sql.DB, cfg config.Config, logger *slog.Logger) (*Server, error) {
 	s := &Server{db: db, cfg: cfg, logger: logger, limiter: newLoginLimiter(), projects: project.New(db, box), deps: deps, logs: logs, box: box}
 	s.webhookCtx, s.webhookCancel = context.WithCancel(context.Background())
 	s.runner = runner.New(db, deps, git, spaces, logs, box, cfg.Shell, cfg.GlobalParallel, cfg.CancelGrace, logger)
-	s.maintenance = maintenance.New(db, logs, spaces, cfg.CleanupInterval, cfg.WorkspaceRetention, cfg.LogRetention, cfg.DeploymentRetention, logger)
+	s.maintenance = maintenance.New(db, logs, spaces, cfg.CleanupInterval, cfg.WorkspaceRetention, cfg.LogRetention, cfg.DeploymentRetention, logger).ConfigureBackups(cfg.DatabasePath, filepath.Join(cfg.DataDir, "backups"), cfg.BackupInterval, cfg.BackupRetention)
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /api/v1/status", s.status)
 	mux.HandleFunc("POST /api/v1/setup", s.setup)
@@ -97,6 +100,8 @@ func New(db *sql.DB, cfg config.Config, logger *slog.Logger) (*Server, error) {
 	mux.HandleFunc("GET /api/v1/auth/sessions", s.requireAuth(s.listSessions))
 	mux.HandleFunc("DELETE /api/v1/auth/sessions/{id}", s.requireAuth(s.deleteSession))
 	mux.HandleFunc("GET /api/v1/system/checks", s.requireAuth(s.systemChecks))
+	mux.HandleFunc("GET /api/v1/system/storage", s.requireAuth(s.systemStorage))
+	mux.HandleFunc("GET /api/v1/audit-events", s.requireAuth(s.listAuditEvents))
 	mux.HandleFunc("GET /api/v1/projects", s.requireAuth(s.listProjects))
 	mux.HandleFunc("POST /api/v1/projects", s.requireAuth(s.createProject))
 	mux.HandleFunc("GET /api/v1/projects/{id}", s.requireAuth(s.getProject))
@@ -117,7 +122,7 @@ func New(db *sql.DB, cfg config.Config, logger *slog.Logger) (*Server, error) {
 	mux.HandleFunc("POST /api/v1/webhooks/{projectID}/{provider}", s.webhook)
 	mux.HandleFunc("GET /api/v1/dashboard", s.requireAuth(s.dashboard))
 	mux.HandleFunc("GET /", s.index)
-	s.handler = s.securityHeaders(s.sameOrigin(s.limitBody(mux)))
+	s.handler = s.audit(s.securityHeaders(s.sameOrigin(s.limitBody(mux))))
 	s.runner.Start()
 	s.recoverWebhooks()
 	s.maintenance.Start()
@@ -146,7 +151,7 @@ func (s *Server) status(w http.ResponseWriter, _ *http.Request) {
 		writeError(w, http.StatusInternalServerError, "internal_error", "Could not read system status.")
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"initialized": count > 0, "version": "dev"})
+	writeJSON(w, http.StatusOK, map[string]any{"initialized": count > 0, "version": Version})
 }
 
 func (s *Server) setup(w http.ResponseWriter, r *http.Request) {

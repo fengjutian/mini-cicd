@@ -1,0 +1,7 @@
+.git
+.cache
+.tools
+data
+apps/web/node_modules
+apps/server/internal/server/webdist
+*.db

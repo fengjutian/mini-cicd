@@ -5,9 +5,12 @@ import (
 	"database/sql"
 	"log/slog"
 	"os"
+	"path/filepath"
+	"sort"
 	"sync"
 	"time"
 
+	"github.com/charlesfeng/mini-cicd/apps/server/internal/database"
 	"github.com/charlesfeng/mini-cicd/apps/server/internal/logstore"
 	"github.com/charlesfeng/mini-cicd/apps/server/internal/workspace"
 )
@@ -22,6 +25,17 @@ type Manager struct {
 	ctx                                        context.Context
 	cancel                                     context.CancelFunc
 	wg                                         sync.WaitGroup
+	databasePath, backupDir                    string
+	backupInterval                             time.Duration
+	backupRetention                            int
+}
+
+func (m *Manager) ConfigureBackups(databasePath, backupDir string, interval time.Duration, retention int) *Manager {
+	m.databasePath = databasePath
+	m.backupDir = backupDir
+	m.backupInterval = interval
+	m.backupRetention = retention
+	return m
 }
 
 func New(db *sql.DB, logs *logstore.Store, spaces *workspace.Manager, interval, workspaceRetention, logRetention time.Duration, deploymentRetention int, logger *slog.Logger) *Manager {
@@ -70,7 +84,48 @@ func (m *Manager) RunOnce(ctx context.Context) error {
 	if err := m.cleanLogs(ctx, now.Add(-m.logRetention).Format(time.RFC3339Nano)); err != nil {
 		return err
 	}
-	return m.pruneDeployments(ctx)
+	if err := m.pruneDeployments(ctx); err != nil {
+		return err
+	}
+	return m.automaticBackup(ctx, now)
+}
+func (m *Manager) automaticBackup(ctx context.Context, now time.Time) error {
+	if m.databasePath == "" || m.backupDir == "" || m.backupInterval <= 0 {
+		return nil
+	}
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	if err := os.MkdirAll(m.backupDir, 0o700); err != nil {
+		return err
+	}
+	files, err := filepath.Glob(filepath.Join(m.backupDir, "mini-cicd-*.db"))
+	if err != nil {
+		return err
+	}
+	sort.Strings(files)
+	if len(files) > 0 {
+		if info, e := os.Stat(files[len(files)-1]); e == nil && now.Sub(info.ModTime()) < m.backupInterval {
+			return nil
+		}
+	}
+	name := filepath.Join(m.backupDir, "mini-cicd-"+now.Format("20060102T150405Z")+".db")
+	if err = database.Backup(m.db, name); err != nil {
+		return err
+	}
+	files = append(files, name)
+	sort.Strings(files)
+	for len(files) > m.backupRetention {
+		old := files[0]
+		files = files[1:]
+		if filepath.Dir(old) == m.backupDir {
+			if err = os.Remove(old); err != nil && !os.IsNotExist(err) {
+				return err
+			}
+		}
+	}
+	m.logger.Info("automatic database backup created", "path", name)
+	return nil
 }
 func (m *Manager) cleanWorkspaces(ctx context.Context, before string) error {
 	rows, err := m.db.QueryContext(ctx, `SELECT id,project_id FROM deployments WHERE finished_at<? AND workspace_path IS NOT NULL AND status IN ('succeeded','failed','cancelled','timed_out')`, before)

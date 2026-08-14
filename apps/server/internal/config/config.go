@@ -25,6 +25,8 @@ type Config struct {
 	WorkspaceRetention  time.Duration
 	LogRetention        time.Duration
 	DeploymentRetention int
+	BackupInterval      time.Duration
+	BackupRetention     int
 }
 
 func Load() (Config, error) {
@@ -77,6 +79,14 @@ func Load() (Config, error) {
 	if err != nil || deploymentRetention < 1 {
 		return Config{}, fmt.Errorf("MINICICD_DEPLOYMENT_RETENTION must be positive")
 	}
+	backupInterval, err := time.ParseDuration(env("MINICICD_BACKUP_INTERVAL", "24h"))
+	if err != nil || backupInterval <= 0 {
+		return Config{}, fmt.Errorf("MINICICD_BACKUP_INTERVAL must be positive")
+	}
+	backupRetention, err := strconv.Atoi(env("MINICICD_BACKUP_RETENTION", "7"))
+	if err != nil || backupRetention < 1 {
+		return Config{}, fmt.Errorf("MINICICD_BACKUP_RETENTION must be positive")
+	}
 	var masterKey []byte
 	if encoded := os.Getenv("MINICICD_MASTER_KEY"); encoded != "" {
 		masterKey, err = base64.RawStdEncoding.DecodeString(encoded)
@@ -101,6 +111,8 @@ func Load() (Config, error) {
 		WorkspaceRetention:  workspaceRetention,
 		LogRetention:        logRetention,
 		DeploymentRetention: deploymentRetention,
+		BackupInterval:      backupInterval,
+		BackupRetention:     backupRetention,
 	}, nil
 }
 

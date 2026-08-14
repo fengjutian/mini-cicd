@@ -18,10 +18,10 @@ func TestMigrateIsIdempotentAndIncludesV3(t *testing.T) {
 		t.Fatal(err)
 	}
 	var versions int
-	if err = db.QueryRow(`SELECT COUNT(*) FROM schema_migrations WHERE version IN (1,2,3)`).Scan(&versions); err != nil {
+	if err = db.QueryRow(`SELECT COUNT(*) FROM schema_migrations WHERE version IN (1,2,3,4,5)`).Scan(&versions); err != nil {
 		t.Fatal(err)
 	}
-	if versions != 3 {
+	if versions != 5 {
 		t.Fatalf("versions=%d", versions)
 	}
 	var column int

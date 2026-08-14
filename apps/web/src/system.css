@@ -1,0 +1,7 @@
+.storage { display:flex; gap:28px; align-items:end; padding:20px; margin-bottom:16px; overflow:auto }
+.storage > div { display:grid; gap:5px; min-width:110px }
+.storage > div:first-child { margin-right:auto }
+.storage small { color:var(--muted) }
+.storage strong { font-size:22px }
+.storage code { font-size:11px; color:var(--muted) }
+.audit { margin-top:16px; max-height:520px }

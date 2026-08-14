@@ -29,6 +29,10 @@ paths:
     delete: {tags: [Auth], summary: Revoke a session, parameters: [{$ref: '#/components/parameters/SessionId'}], responses: {'204': {description: Revoked}, '404': {$ref: '#/components/responses/Error'}}}
   /system/checks:
     get: {tags: [System], summary: Check database, Git, shell, storage and encryption, responses: {'200': {$ref: '#/components/responses/JSON'}}}
+  /system/storage:
+    get: {tags: [System], summary: Get database, repository, workspace, log and backup usage, responses: {'200': {$ref: '#/components/responses/JSON'}}}
+  /audit-events:
+    get: {tags: [System], summary: List the 500 latest mutation audit events, responses: {'200': {$ref: '#/components/responses/JSON'}}}
   /dashboard:
     get: {tags: [System], summary: Get dashboard counters, responses: {'200': {$ref: '#/components/responses/JSON'}}}
   /projects:
