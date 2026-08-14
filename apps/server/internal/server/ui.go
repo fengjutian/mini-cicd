@@ -1,39 +1,31 @@
 package server
 
-import "net/http"
+import (
+	"embed"
+	"io/fs"
+	"net/http"
+	"path"
+	"strings"
+)
+
+//go:embed webdist/* webdist/assets/*
+var webAssets embed.FS
 
 func (s *Server) index(w http.ResponseWriter, r *http.Request) {
-	if r.URL.Path != "/" {
-		http.NotFound(w, r)
+	assets, err := fs.Sub(webAssets, "webdist")
+	if err != nil {
+		http.Error(w, "frontend unavailable", 500)
 		return
 	}
-	w.Header().Set("Content-Type", "text/html; charset=utf-8")
-	_, _ = w.Write([]byte(indexHTML))
+	requested := strings.TrimPrefix(path.Clean(r.URL.Path), "/")
+	if requested == "." || requested == "" {
+		requested = "index.html"
+	}
+	if _, err = fs.Stat(assets, requested); err != nil {
+		requested = "index.html"
+	}
+	if strings.HasPrefix(requested, "assets/") {
+		w.Header().Set("Cache-Control", "public, max-age=31536000, immutable")
+	}
+	http.ServeFileFS(w, r, assets, requested)
 }
-
-const indexHTML = `<!doctype html>
-<html lang="en">
-<head>
-  <meta charset="utf-8">
-  <meta name="viewport" content="width=device-width,initial-scale=1">
-  <title>mini-ci-cd</title>
-  <style>
-    :root{color-scheme:dark;--bg:#0b0d10;--panel:#15191f;--line:#29313b;--text:#f2f5f7;--muted:#9ba7b4;--accent:#69e3a7;--danger:#ff7b72}*{box-sizing:border-box}body{margin:0;background:radial-gradient(circle at top left,#16231e,var(--bg) 45%);font:15px/1.5 system-ui,sans-serif;color:var(--text);min-height:100vh;display:grid;place-items:center}.shell{width:min(92vw,520px);margin:42px auto}.shell.wide{width:min(94vw,980px)}.brand{font-weight:800;letter-spacing:-.04em;font-size:28px;margin:0 0 24px}.brand span{color:var(--accent)}.card{background:color-mix(in srgb,var(--panel) 92%,transparent);border:1px solid var(--line);border-radius:16px;padding:28px;box-shadow:0 20px 70px #0008}h1{font-size:22px;margin:0 0 8px}h2{font-size:16px;margin:22px 0 8px}p{color:var(--muted);margin:0 0 24px}.field{margin:14px 0}label{display:block;margin-bottom:6px;font-size:13px;color:var(--muted)}input,textarea{width:100%;border:1px solid var(--line);background:#0e1217;color:var(--text);border-radius:9px;padding:11px 12px;outline:none}textarea{min-height:84px;resize:vertical}input:focus,textarea:focus{border-color:var(--accent)}button{width:100%;margin-top:12px;border:0;border-radius:9px;padding:12px;font-weight:700;background:var(--accent);color:#07140d;cursor:pointer}button.secondary{background:#252d36;color:var(--text)}button.compact{width:auto;padding:8px 12px;margin:0 0 0 8px}button:disabled{opacity:.55;cursor:wait}.error{color:var(--danger);min-height:24px;margin-top:14px}.meta,.toolbar{display:flex;align-items:center;justify-content:space-between;gap:12px}.meta{border-top:1px solid var(--line);padding-top:18px;margin-top:18px;color:var(--muted)}.hidden{display:none}.pill{color:var(--accent)}.stats{display:grid;grid-template-columns:repeat(4,1fr);gap:10px;margin:20px 0}.stat,.project{border:1px solid var(--line);background:#10151a;border-radius:10px;padding:14px}.stat strong{display:block;font-size:22px}.stat span,.project small{color:var(--muted)}.project{margin:10px 0}.project .actions{display:flex;justify-content:flex-end}.deployments{font:13px ui-monospace,monospace;color:var(--muted);margin-top:10px}.deployment{display:flex;justify-content:space-between;border-top:1px solid var(--line);padding:7px 0}@media(max-width:700px){.stats{grid-template-columns:1fr 1fr}.toolbar{align-items:flex-start;flex-direction:column}.toolbar button{margin:0}}
-  </style>
-</head>
-<body><main class="shell"><div class="brand">mini<span>-ci-cd</span></div><section class="card" id="app">Loading…</section></main>
-<script>
-const app=document.querySelector('#app');
-const esc=s=>String(s).replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
-async function api(path,options={}){const r=await fetch(path,{...options,headers:{'Content-Type':'application/json',...(options.headers||{})}});if(r.status===204)return null;const body=await r.json();if(!r.ok)throw new Error(body.error?.message||'Request failed');return body}
-function bind(form,path){form.addEventListener('submit',async e=>{e.preventDefault();const btn=form.querySelector('button'),err=form.querySelector('.error');btn.disabled=true;err.textContent='';try{const data=Object.fromEntries(new FormData(form));await api(path,{method:'POST',body:JSON.stringify(data)});await boot()}catch(x){err.textContent=x.message}finally{btn.disabled=false}})}
-function setup(){app.innerHTML='<h1>Create the Owner account</h1><p>This account has full control of deployments. Public registration closes after setup.</p><form><div class="field"><label>Email</label><input name="email" type="email" autocomplete="email" required></div><div class="field"><label>Username</label><input name="username" minlength="2" maxlength="64" required></div><div class="field"><label>Password</label><input name="password" type="password" minlength="12" autocomplete="new-password" required></div><div class="field"><label>Confirm password</label><input name="confirmPassword" type="password" minlength="12" autocomplete="new-password" required></div><button>Create Owner</button><div class="error"></div></form>';bind(app.querySelector('form'),'/api/v1/setup')}
-function login(){app.innerHTML='<h1>Welcome back</h1><p>Sign in to manage projects and deployments.</p><form><div class="field"><label>Email</label><input name="email" type="email" autocomplete="email" required></div><div class="field"><label>Password</label><input name="password" type="password" autocomplete="current-password" required></div><button>Sign in</button><div class="error"></div></form>';bind(app.querySelector('form'),'/api/v1/auth/login')}
-const stepLines=value=>value.split('\n').map(x=>x.trim()).filter(Boolean).map((command,i)=>({name:'Step '+(i+1),command}));
-async function dashboard(u){document.querySelector('.shell').classList.add('wide');const [stats,projects]=await Promise.all([api('/api/v1/dashboard'),api('/api/v1/projects')]);app.innerHTML='<div class="toolbar"><div><h1>Deployments</h1><p>Signed in as '+esc(u.username)+' · '+esc(u.email)+'</p></div><div><button class="compact secondary" id="new-project">New project</button><button class="compact secondary" id="logout">Sign out</button></div></div><div class="stats"><div class="stat"><strong>'+stats.projects+'</strong><span>Projects</span></div><div class="stat"><strong>'+stats.runningDeployments+'</strong><span>Running</span></div><div class="stat"><strong>'+stats.succeededLast24Hours+'</strong><span>Succeeded 24h</span></div><div class="stat"><strong>'+stats.failedLast24Hours+'</strong><span>Failed 24h</span></div></div><div id="project-form" class="hidden"></div><h2>Projects</h2><div id="projects"></div><div class="error"></div>';app.querySelector('#logout').onclick=async()=>{await api('/api/v1/auth/logout',{method:'POST',body:'{}'});document.querySelector('.shell').classList.remove('wide');await boot()};app.querySelector('#new-project').onclick=showProjectForm;renderProjects(projects.items)}
-function showProjectForm(){const host=app.querySelector('#project-form');host.classList.remove('hidden');host.innerHTML='<h2>Create project</h2><form><div class="field"><label>Name</label><input name="name" required></div><div class="field"><label>Slug</label><input name="slug" pattern="[a-z0-9]+(-[a-z0-9]+)*" required></div><div class="field"><label>Repository HTTPS or SSH URL</label><input name="repositoryUrl" required></div><div class="field"><label>Branch</label><input name="branch" value="main" required></div><div class="field"><label>Build commands — one per line</label><textarea name="build"></textarea></div><div class="field"><label>Deploy commands — one per line</label><textarea name="deploy"></textarea></div><button>Create project</button><button type="button" class="secondary" id="cancel-project">Cancel</button><div class="error"></div></form>';host.querySelector('#cancel-project').onclick=()=>host.classList.add('hidden');host.querySelector('form').onsubmit=async e=>{e.preventDefault();const f=new FormData(e.target),err=e.target.querySelector('.error');err.textContent='';try{await api('/api/v1/projects',{method:'POST',body:JSON.stringify({name:f.get('name'),slug:f.get('slug'),repositoryUrl:f.get('repositoryUrl'),branch:f.get('branch'),authType:'none',buildSteps:stepLines(f.get('build')),deploySteps:stepLines(f.get('deploy'))})});await dashboard(await api('/api/v1/auth/me'))}catch(x){err.textContent=x.message}}}
-function renderProjects(items){const host=app.querySelector('#projects');if(!items.length){host.innerHTML='<p>No projects yet. Create one to run the first deployment.</p>';return}host.innerHTML=items.map(p=>'<div class="project" data-id="'+esc(p.id)+'"><div class="toolbar"><div><strong>'+esc(p.name)+'</strong><br><small>'+esc(p.branch)+' · '+esc(p.repositoryUrl)+'</small></div><div class="actions"><button class="compact secondary history">History</button><button class="compact deploy">Deploy</button></div></div><div class="deployments hidden"></div></div>').join('');host.querySelectorAll('.project').forEach(card=>{const id=card.dataset.id;card.querySelector('.deploy').onclick=async e=>{e.target.disabled=true;try{await api('/api/v1/projects/'+id+'/deployments',{method:'POST',body:'{}'});await loadHistory(card,id)}catch(x){app.querySelector('.error').textContent=x.message}finally{e.target.disabled=false}};card.querySelector('.history').onclick=()=>loadHistory(card,id)})}
-async function loadHistory(card,id){const box=card.querySelector('.deployments');box.classList.remove('hidden');box.textContent='Loading…';try{const data=await api('/api/v1/projects/'+id+'/deployments');box.innerHTML=data.items.length?data.items.slice(0,10).map(d=>'<div class="deployment"><span>#'+d.id+' · '+esc(d.commitSha.slice(0,8))+'</span><span class="pill">'+esc(d.status)+'</span></div>').join(''):'No deployments yet.'}catch(e){box.textContent=e.message}}
-async function boot(){try{const st=await api('/api/v1/status');if(!st.initialized)return setup();try{return await dashboard(await api('/api/v1/auth/me'))}catch{return login()}}catch(e){app.innerHTML='<h1>Unable to start</h1><p class="error">'+esc(e.message)+'</p>'}}
-boot();
-</script></body></html>`

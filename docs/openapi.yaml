@@ -1,0 +1,103 @@
+openapi: 3.1.0
+info:
+  title: mini-ci-cd API
+  version: 0.1.0
+  description: Local-first CI/CD control plane. Browser clients authenticate with an HttpOnly session cookie.
+servers: [{url: /api/v1}]
+tags:
+  - {name: System}
+  - {name: Auth}
+  - {name: Projects}
+  - {name: Deployments}
+  - {name: Webhooks}
+paths:
+  /status:
+    get: {tags: [System], summary: Get initialization status, security: [], responses: {'200': {$ref: '#/components/responses/JSON'}}}
+  /setup:
+    post: {tags: [Auth], summary: Create the one Owner account, security: [], requestBody: {$ref: '#/components/requestBodies/Setup'}, responses: {'201': {description: Owner created, content: {application/json: {schema: {$ref: '#/components/schemas/User'}}}}, '409': {$ref: '#/components/responses/Error'}}}
+  /auth/login:
+    post: {tags: [Auth], summary: Create a session, security: [], requestBody: {required: true, content: {application/json: {schema: {$ref: '#/components/schemas/Login'}}}}, responses: {'200': {description: Signed in, content: {application/json: {schema: {$ref: '#/components/schemas/User'}}}}, '401': {$ref: '#/components/responses/Error'}}}
+  /auth/logout:
+    post: {tags: [Auth], summary: Revoke current session, responses: {'204': {description: Signed out}}}
+  /auth/me:
+    get: {tags: [Auth], summary: Get current Owner, responses: {'200': {description: Current user, content: {application/json: {schema: {$ref: '#/components/schemas/User'}}}}}}
+  /auth/password:
+    put: {tags: [Auth], summary: Change password and revoke other sessions, requestBody: {required: true, content: {application/json: {schema: {$ref: '#/components/schemas/PasswordChange'}}}}, responses: {'204': {description: Password changed}, '401': {$ref: '#/components/responses/Error'}}}
+  /auth/sessions:
+    get: {tags: [Auth], summary: List active sessions, responses: {'200': {description: Sessions, content: {application/json: {schema: {type: array, items: {$ref: '#/components/schemas/Session'}}}}}}}
+  /auth/sessions/{id}:
+    delete: {tags: [Auth], summary: Revoke a session, parameters: [{$ref: '#/components/parameters/SessionId'}], responses: {'204': {description: Revoked}, '404': {$ref: '#/components/responses/Error'}}}
+  /system/checks:
+    get: {tags: [System], summary: Check database, Git, shell, storage and encryption, responses: {'200': {$ref: '#/components/responses/JSON'}}}
+  /dashboard:
+    get: {tags: [System], summary: Get dashboard counters, responses: {'200': {$ref: '#/components/responses/JSON'}}}
+  /projects:
+    get: {tags: [Projects], summary: List active projects, responses: {'200': {description: Projects, content: {application/json: {schema: {type: array, items: {$ref: '#/components/schemas/Project'}}}}}}}
+    post: {tags: [Projects], summary: Create a project, requestBody: {$ref: '#/components/requestBodies/Project'}, responses: {'201': {description: Created, content: {application/json: {schema: {$ref: '#/components/schemas/Project'}}}}, '422': {$ref: '#/components/responses/Error'}}}
+  /projects/{id}:
+    parameters: [{$ref: '#/components/parameters/ProjectId'}]
+    get: {tags: [Projects], summary: Get project, responses: {'200': {description: Project, content: {application/json: {schema: {$ref: '#/components/schemas/Project'}}}}, '404': {$ref: '#/components/responses/Error'}}}
+    put: {tags: [Projects], summary: Replace project configuration, requestBody: {$ref: '#/components/requestBodies/Project'}, responses: {'200': {description: Updated project, content: {application/json: {schema: {$ref: '#/components/schemas/Project'}}}}, '422': {$ref: '#/components/responses/Error'}}}
+    delete: {tags: [Projects], summary: Archive project, responses: {'204': {description: Archived}, '404': {$ref: '#/components/responses/Error'}}}
+  /projects/{id}/variables:
+    get: {tags: [Projects], summary: List current variable versions, parameters: [{$ref: '#/components/parameters/ProjectId'}], responses: {'200': {description: Variables, content: {application/json: {schema: {type: array, items: {$ref: '#/components/schemas/Variable'}}}}}}}
+  /projects/{id}/variables/{name}:
+    parameters: [{$ref: '#/components/parameters/ProjectId'}, {name: name, in: path, required: true, schema: {type: string, pattern: '^[A-Za-z_][A-Za-z0-9_]*$'}}]
+    put: {tags: [Projects], summary: Create a new environment variable or Secret version, requestBody: {required: true, content: {application/json: {schema: {$ref: '#/components/schemas/VariableInput'}}}}, responses: {'200': {description: Saved, content: {application/json: {schema: {$ref: '#/components/schemas/Variable'}}}}}}
+    delete: {tags: [Projects], summary: Remove current variable version, responses: {'204': {description: Removed}}}
+  /projects/{id}/deployments:
+    parameters: [{$ref: '#/components/parameters/ProjectId'}]
+    get: {tags: [Deployments], summary: List project deployments, responses: {'200': {$ref: '#/components/responses/JSON'}}}
+    post: {tags: [Deployments], summary: Resolve branch and queue a deployment, responses: {'201': {description: Queued deployment, content: {application/json: {schema: {$ref: '#/components/schemas/Deployment'}}}}}}
+  /projects/{id}/webhook-deliveries:
+    get: {tags: [Webhooks], summary: List the 200 latest webhook deliveries, parameters: [{$ref: '#/components/parameters/ProjectId'}], responses: {'200': {description: Deliveries, content: {application/json: {schema: {type: array, items: {$ref: '#/components/schemas/WebhookDelivery'}}}}}}}
+  /deployments/{deploymentId}:
+    get: {tags: [Deployments], summary: Get deployment, parameters: [{$ref: '#/components/parameters/DeploymentId'}], responses: {'200': {description: Deployment, content: {application/json: {schema: {$ref: '#/components/schemas/Deployment'}}}}}}
+  /deployments/{deploymentId}/steps:
+    get: {tags: [Deployments], summary: List step snapshots and results, parameters: [{$ref: '#/components/parameters/DeploymentId'}], responses: {'200': {$ref: '#/components/responses/JSON'}}}
+  /deployments/{deploymentId}/cancel:
+    post: {tags: [Deployments], summary: Idempotently request cancellation, parameters: [{$ref: '#/components/parameters/DeploymentId'}], responses: {'200': {description: Deployment state, content: {application/json: {schema: {$ref: '#/components/schemas/Deployment'}}}}}}
+  /deployments/{deploymentId}/redeploy:
+    post: {tags: [Deployments], summary: Queue the same immutable Commit SHA, parameters: [{$ref: '#/components/parameters/DeploymentId'}], responses: {'201': {description: New deployment, content: {application/json: {schema: {$ref: '#/components/schemas/Deployment'}}}}}}
+  /deployments/{deploymentId}/logs:
+    get:
+      tags: [Deployments]
+      summary: Stream redacted logs with resumable sequence IDs
+      parameters: [{$ref: '#/components/parameters/DeploymentId'}, {name: Last-Event-ID, in: header, schema: {type: integer, minimum: 0}}]
+      responses: {'200': {description: SSE stream, content: {text/event-stream: {schema: {type: string}}}}}
+  /webhooks/{projectId}/{provider}:
+    post:
+      tags: [Webhooks]
+      summary: Receive an authenticated push webhook
+      security: []
+      parameters: [{$ref: '#/components/parameters/WebhookProjectId'}, {name: provider, in: path, required: true, schema: {type: string, enum: [github, gitlab, gitea]}}]
+      requestBody: {required: true, content: {application/json: {schema: {type: object, additionalProperties: true}}}}
+      responses: {'202': {$ref: '#/components/responses/JSON'}, '401': {$ref: '#/components/responses/Error'}}
+components:
+  securitySchemes: {sessionCookie: {type: apiKey, in: cookie, name: minicicd_session}}
+  parameters:
+    ProjectId: {name: id, in: path, required: true, schema: {type: string}}
+    WebhookProjectId: {name: projectId, in: path, required: true, schema: {type: string}}
+    DeploymentId: {name: deploymentId, in: path, required: true, schema: {type: integer, minimum: 1}}
+    SessionId: {name: id, in: path, required: true, schema: {type: string, pattern: '^[a-f0-9]{64}$'}}
+  responses:
+    JSON: {description: JSON response, content: {application/json: {schema: {type: object}}}}
+    Error: {description: Error, content: {application/json: {schema: {$ref: '#/components/schemas/Error'}}}}
+  requestBodies:
+    Setup: {required: true, content: {application/json: {schema: {$ref: '#/components/schemas/Setup'}}}}
+    Project: {required: true, content: {application/json: {schema: {$ref: '#/components/schemas/ProjectInput'}}}}
+  schemas:
+    Error: {type: object, required: [error], properties: {error: {type: object, required: [code, message], properties: {code: {type: string}, message: {type: string}}}}}
+    User: {type: object, required: [id, email, username, role, createdAt], properties: {id: {type: string}, email: {type: string, format: email}, username: {type: string}, role: {const: owner}, createdAt: {type: string, format: date-time}}}
+    Setup: {allOf: [{$ref: '#/components/schemas/Login'}, {type: object, required: [username, confirmPassword], properties: {username: {type: string, minLength: 2, maxLength: 64}, confirmPassword: {type: string, minLength: 12}}}]}
+    Login: {type: object, required: [email, password], properties: {email: {type: string, format: email}, password: {type: string, format: password}}}
+    PasswordChange: {type: object, required: [currentPassword, newPassword, confirmPassword], properties: {currentPassword: {type: string}, newPassword: {type: string, minLength: 12}, confirmPassword: {type: string, minLength: 12}}}
+    Session: {type: object, required: [id, current, createdAt, expiresAt, lastSeenAt], properties: {id: {type: string}, current: {type: boolean}, ipAddress: {type: string}, userAgent: {type: string}, createdAt: {type: string, format: date-time}, expiresAt: {type: string, format: date-time}, lastSeenAt: {type: string, format: date-time}}}
+    StepInput: {type: object, required: [name, command], properties: {name: {type: string}, command: {type: string}, workingDirectory: {type: string}}}
+    ProjectInput: {type: object, required: [name, slug, repositoryUrl, branch, authType, buildSteps, deploySteps], properties: {name: {type: string}, slug: {type: string}, description: {type: string}, repositoryUrl: {type: string}, branch: {type: string}, authType: {enum: [none, https, ssh]}, gitUsername: {type: string}, gitSecret: {type: string, writeOnly: true}, sshPrivateKey: {type: string, writeOnly: true}, sshKnownHosts: {type: string}, buildSteps: {type: array, items: {$ref: '#/components/schemas/StepInput'}}, deploySteps: {type: array, items: {$ref: '#/components/schemas/StepInput'}}, stepTimeoutSeconds: {type: integer}, deploymentTimeoutSeconds: {type: integer}, healthEnabled: {type: boolean}, healthUrl: {type: string}, healthInitialDelaySeconds: {type: integer}, healthTimeoutSeconds: {type: integer}, healthRetries: {type: integer}, healthRetryIntervalSeconds: {type: integer}, healthExpectedStatus: {type: string}, autoDeploy: {type: boolean}, webhookProvider: {enum: [github, gitlab, gitea]}, webhookSecret: {type: string, writeOnly: true}}}
+    Project: {allOf: [{$ref: '#/components/schemas/ProjectInput'}, {type: object, required: [id, hasGitSecret, hasSshPrivateKey, hasWebhookSecret, createdAt, updatedAt], properties: {id: {type: string}, hasGitSecret: {type: boolean}, hasSshPrivateKey: {type: boolean}, hasWebhookSecret: {type: boolean}, createdAt: {type: string, format: date-time}, updatedAt: {type: string, format: date-time}}}]}
+    VariableInput: {type: object, required: [value, isSecret], properties: {value: {type: string}, isSecret: {type: boolean}}}
+    Variable: {type: object, properties: {name: {type: string}, value: {type: string}, isSecret: {type: boolean}, version: {type: integer}, updatedAt: {type: string, format: date-time}}}
+    Deployment: {type: object, properties: {id: {type: integer}, projectId: {type: string}, status: {enum: [resolving, queued, preparing, running, cancelling, cancelled, succeeded, failed, timed_out]}, triggerType: {enum: [manual, webhook, redeploy]}, branch: {type: string}, commitSha: {type: string, pattern: '^[a-f0-9]{40}$'}, commitMessage: {type: string}, commitAuthor: {type: string}, errorSummary: {type: string}, createdAt: {type: string, format: date-time}, queuedAt: {type: [string, 'null'], format: date-time}, startedAt: {type: [string, 'null'], format: date-time}, finishedAt: {type: [string, 'null'], format: date-time}}}
+    WebhookDelivery: {type: object, properties: {id: {type: integer}, provider: {type: string}, deliveryId: {type: string}, eventType: {type: string}, accepted: {type: boolean}, rejectionReason: {type: string}, deploymentId: {type: [integer, 'null']}, commitSha: {type: string}, receivedAt: {type: string, format: date-time}}}
+security: [{sessionCookie: []}]

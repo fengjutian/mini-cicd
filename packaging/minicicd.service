@@ -1,0 +1,20 @@
+[Unit]
+Description=mini-ci-cd local deployment service
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=minicicd
+Group=minicicd
+EnvironmentFile=-/etc/minicicd/minicicd.env
+ExecStart=/usr/local/bin/minicicd
+Restart=on-failure
+RestartSec=5
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ReadWritePaths=/var/lib/minicicd
+
+[Install]
+WantedBy=multi-user.target

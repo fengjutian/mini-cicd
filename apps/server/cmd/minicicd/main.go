@@ -3,6 +3,8 @@ package main
 import (
 	"context"
 	"errors"
+	"flag"
+	"fmt"
 	"log/slog"
 	"net/http"
 	"os"
@@ -21,6 +23,13 @@ func main() {
 	if err != nil {
 		logger.Error("invalid configuration", "error", err)
 		os.Exit(1)
+	}
+	if len(os.Args) > 1 && (os.Args[1] == "backup" || os.Args[1] == "restore") {
+		if err := databaseCommand(cfg, os.Args[1], os.Args[2:]); err != nil {
+			logger.Error("database command failed", "error", err)
+			os.Exit(1)
+		}
+		return
 	}
 
 	db, err := database.Open(cfg.DatabasePath)
@@ -67,4 +76,44 @@ func main() {
 	if err := httpServer.Shutdown(ctx); err != nil {
 		logger.Error("graceful shutdown failed", "error", err)
 	}
+}
+
+func databaseCommand(cfg config.Config, command string, args []string) error {
+	flags := flag.NewFlagSet(command, flag.ContinueOnError)
+	if command == "backup" {
+		output := flags.String("output", "", "backup file path")
+		if err := flags.Parse(args); err != nil {
+			return err
+		}
+		if *output == "" {
+			return errors.New("backup requires --output")
+		}
+		db, err := database.Open(cfg.DatabasePath)
+		if err != nil {
+			return err
+		}
+		defer db.Close()
+		if err = database.Backup(db, *output); err != nil {
+			return err
+		}
+		fmt.Printf("backup created: %s\n", *output)
+		return nil
+	}
+	input := flags.String("input", "", "backup file path")
+	if err := flags.Parse(args); err != nil {
+		return err
+	}
+	if *input == "" {
+		return errors.New("restore requires --input")
+	}
+	previous, err := database.Restore(*input, cfg.DatabasePath)
+	if err != nil {
+		return err
+	}
+	if previous != "" {
+		fmt.Printf("restore complete; previous database: %s\n", previous)
+	} else {
+		fmt.Println("restore complete")
+	}
+	return nil
 }
