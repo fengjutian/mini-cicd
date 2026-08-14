@@ -11,6 +11,7 @@ import (
 	"net"
 	"net/http"
 	"net/mail"
+	"net/url"
 	"strings"
 	"sync"
 	"time"
@@ -50,7 +51,7 @@ func New(db *sql.DB, cfg config.Config, logger *slog.Logger) http.Handler {
 	mux.HandleFunc("GET /api/v1/auth/me", s.requireAuth(s.me))
 	mux.HandleFunc("GET /healthz", s.health)
 	mux.HandleFunc("GET /", s.index)
-	return s.securityHeaders(s.limitBody(mux))
+	return s.securityHeaders(s.sameOrigin(s.limitBody(mux)))
 }
 
 func (s *Server) health(w http.ResponseWriter, _ *http.Request) {
@@ -251,6 +252,26 @@ func (s *Server) clientIP(r *http.Request) string {
 func (s *Server) limitBody(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		r.Body = http.MaxBytesReader(w, r.Body, 1<<20)
+		next.ServeHTTP(w, r)
+	})
+}
+
+func (s *Server) sameOrigin(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodGet || r.Method == http.MethodHead || r.Method == http.MethodOptions {
+			next.ServeHTTP(w, r)
+			return
+		}
+		origin := r.Header.Get("Origin")
+		if origin == "" {
+			next.ServeHTTP(w, r)
+			return
+		}
+		parsed, err := url.Parse(origin)
+		if err != nil || !strings.EqualFold(parsed.Host, r.Host) {
+			writeError(w, http.StatusForbidden, "origin_rejected", "Cross-origin requests are not allowed.")
+			return
+		}
 		next.ServeHTTP(w, r)
 	})
 }
