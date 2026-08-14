@@ -46,20 +46,21 @@ type user struct {
 }
 
 type Server struct {
-	db            *sql.DB
-	cfg           config.Config
-	logger        *slog.Logger
-	limiter       *loginLimiter
-	projects      *project.Service
-	deps          *deployment.Service
-	runner        *runner.Manager
-	logs          *logstore.Store
-	box           *secret.Box
-	handler       http.Handler
-	webhookCtx    context.Context
-	webhookCancel context.CancelFunc
-	webhookWG     sync.WaitGroup
-	maintenance   *maintenance.Manager
+	db             *sql.DB
+	cfg            config.Config
+	logger         *slog.Logger
+	limiter        *loginLimiter
+	webhookLimiter *requestLimiter
+	projects       *project.Service
+	deps           *deployment.Service
+	runner         *runner.Manager
+	logs           *logstore.Store
+	box            *secret.Box
+	handler        http.Handler
+	webhookCtx     context.Context
+	webhookCancel  context.CancelFunc
+	webhookWG      sync.WaitGroup
+	maintenance    *maintenance.Manager
 }
 
 func New(db *sql.DB, cfg config.Config, logger *slog.Logger) (*Server, error) {
@@ -86,10 +87,10 @@ func New(db *sql.DB, cfg config.Config, logger *slog.Logger) (*Server, error) {
 	if err != nil {
 		return nil, err
 	}
-	s := &Server{db: db, cfg: cfg, logger: logger, limiter: newLoginLimiter(), projects: project.New(db, box), deps: deps, logs: logs, box: box}
+	s := &Server{db: db, cfg: cfg, logger: logger, limiter: newLoginLimiter(), webhookLimiter: newRequestLimiter(120), projects: project.New(db, box), deps: deps, logs: logs, box: box}
 	s.webhookCtx, s.webhookCancel = context.WithCancel(context.Background())
 	s.runner = runner.New(db, deps, git, spaces, logs, box, cfg.Shell, cfg.GlobalParallel, cfg.CancelGrace, logger)
-	s.maintenance = maintenance.New(db, logs, spaces, cfg.CleanupInterval, cfg.WorkspaceRetention, cfg.LogRetention, cfg.DeploymentRetention, logger).ConfigureBackups(cfg.DatabasePath, filepath.Join(cfg.DataDir, "backups"), cfg.BackupInterval, cfg.BackupRetention)
+	s.maintenance = maintenance.New(db, logs, spaces, cfg.CleanupInterval, cfg.WorkspaceRetention, cfg.LogRetention, cfg.DeploymentRetention, logger).ConfigureBackups(cfg.DatabasePath, filepath.Join(cfg.DataDir, "backups"), cfg.BackupInterval, cfg.BackupRetention).ConfigureAudit(cfg.AuditRetention, cfg.AuditMaxEvents)
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /api/v1/status", s.status)
 	mux.HandleFunc("POST /api/v1/setup", s.setup)
@@ -364,7 +365,11 @@ func (s *Server) securityHeaders(next http.Handler) http.Handler {
 		w.Header().Set("X-Content-Type-Options", "nosniff")
 		w.Header().Set("X-Frame-Options", "DENY")
 		w.Header().Set("Referrer-Policy", "no-referrer")
-		w.Header().Set("Content-Security-Policy", "default-src 'self'; style-src 'self' 'unsafe-inline'; script-src 'self' 'unsafe-inline'; connect-src 'self'")
+		w.Header().Set("Content-Security-Policy", "default-src 'self'; object-src 'none'; base-uri 'none'; frame-ancestors 'none'; style-src 'self'; script-src 'self'; connect-src 'self'; form-action 'self'")
+		w.Header().Set("Permissions-Policy", "camera=(), microphone=(), geolocation=(), payment=()")
+		if s.cfg.SecureCookies {
+			w.Header().Set("Strict-Transport-Security", "max-age=31536000; includeSubDomains")
+		}
 		next.ServeHTTP(w, r)
 	})
 }
@@ -424,6 +429,13 @@ func (l *loginLimiter) allow(key string) bool {
 		}
 	}
 	l.attempts[key] = recent
+	if len(l.attempts) > 10000 {
+		for k, v := range l.attempts {
+			if len(v) == 0 || v[len(v)-1].Before(cutoff) {
+				delete(l.attempts, k)
+			}
+		}
+	}
 	return len(recent) < 5
 }
 
@@ -431,6 +443,41 @@ func (l *loginLimiter) failed(key string) {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 	l.attempts[key] = append(l.attempts[key], time.Now())
+}
+
+type requestLimiter struct {
+	mu    sync.Mutex
+	limit int
+	hits  map[string][]time.Time
+}
+
+func newRequestLimiter(limit int) *requestLimiter {
+	return &requestLimiter{limit: limit, hits: map[string][]time.Time{}}
+}
+func (l *requestLimiter) allow(key string) bool {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	cutoff := time.Now().Add(-time.Minute)
+	recent := l.hits[key][:0]
+	for _, at := range l.hits[key] {
+		if at.After(cutoff) {
+			recent = append(recent, at)
+		}
+	}
+	if len(recent) >= l.limit {
+		l.hits[key] = recent
+		return false
+	}
+	recent = append(recent, time.Now())
+	l.hits[key] = recent
+	if len(l.hits) > 10000 {
+		for k, v := range l.hits {
+			if len(v) == 0 || v[len(v)-1].Before(cutoff) {
+				delete(l.hits, k)
+			}
+		}
+	}
+	return true
 }
 
 func (l *loginLimiter) success(key string) {

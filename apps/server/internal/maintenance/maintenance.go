@@ -28,6 +28,14 @@ type Manager struct {
 	databasePath, backupDir                    string
 	backupInterval                             time.Duration
 	backupRetention                            int
+	auditRetention                             time.Duration
+	auditMaxEvents                             int
+}
+
+func (m *Manager) ConfigureAudit(retention time.Duration, maxEvents int) *Manager {
+	m.auditRetention = retention
+	m.auditMaxEvents = maxEvents
+	return m
 }
 
 func (m *Manager) ConfigureBackups(databasePath, backupDir string, interval time.Duration, retention int) *Manager {
@@ -58,7 +66,9 @@ func (m *Manager) Start() {
 	m.wg.Add(1)
 	go func() {
 		defer m.wg.Done()
-		if err := m.RunOnce(m.ctx); err != nil && m.ctx.Err() == nil { m.logger.Error("initial maintenance failed", "error", err) }
+		if err := m.RunOnce(m.ctx); err != nil && m.ctx.Err() == nil {
+			m.logger.Error("initial maintenance failed", "error", err)
+		}
 		ticker := time.NewTicker(m.interval)
 		defer ticker.Stop()
 		for {
@@ -88,7 +98,23 @@ func (m *Manager) RunOnce(ctx context.Context) error {
 	if err := m.pruneDeployments(ctx); err != nil {
 		return err
 	}
+	if err := m.pruneAudit(ctx, now); err != nil {
+		return err
+	}
 	return m.automaticBackup(ctx, now)
+}
+
+func (m *Manager) pruneAudit(ctx context.Context, now time.Time) error {
+	if m.auditRetention > 0 {
+		if _, err := m.db.ExecContext(ctx, `DELETE FROM audit_events WHERE created_at<?`, now.Add(-m.auditRetention).Format(time.RFC3339Nano)); err != nil {
+			return err
+		}
+	}
+	if m.auditMaxEvents > 0 {
+		_, err := m.db.ExecContext(ctx, `DELETE FROM audit_events WHERE id NOT IN (SELECT id FROM audit_events ORDER BY id DESC LIMIT ?)`, m.auditMaxEvents)
+		return err
+	}
+	return nil
 }
 func (m *Manager) automaticBackup(ctx context.Context, now time.Time) error {
 	if m.databasePath == "" || m.backupDir == "" || m.backupInterval <= 0 {

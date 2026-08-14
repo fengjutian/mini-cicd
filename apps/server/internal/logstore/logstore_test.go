@@ -1,6 +1,7 @@
 package logstore
 
 import (
+	"encoding/base64"
 	"os"
 	"strings"
 	"testing"
@@ -37,6 +38,15 @@ func TestRedactsBeforeDiskAndPublish(t *testing.T) {
 	entries, err := store.ReadAfter("project", 1, 0)
 	if err != nil || len(entries) != 1 || entries[0].Sequence != 1 {
 		t.Fatalf("entries=%v err=%v", entries, err)
+	}
+}
+
+func TestRedactsEncodedSecretVariants(t *testing.T) {
+	secret := "token&danger"
+	variants := filterSecrets([]string{secret})
+	encoded := base64.StdEncoding.EncodeToString([]byte(secret))
+	if got := redact("encoded="+encoded+" url=token%26danger", variants); strings.Contains(got, encoded) || strings.Contains(got, "token%26danger") {
+		t.Fatalf("encoded secret leaked: %q", got)
 	}
 }
 

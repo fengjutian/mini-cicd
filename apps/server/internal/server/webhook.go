@@ -56,6 +56,11 @@ func (s *Server) listWebhookDeliveries(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) webhook(w http.ResponseWriter, r *http.Request) {
+	if !s.webhookLimiter.allow(s.clientIP(r)) {
+		w.Header().Set("Retry-After", "60")
+		writeError(w, http.StatusTooManyRequests, "rate_limited", "Too many webhook requests.")
+		return
+	}
 	projectID, provider := r.PathValue("projectID"), r.PathValue("provider")
 	var configuredProvider, repo, branch string
 	var enabled bool

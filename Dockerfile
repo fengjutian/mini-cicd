@@ -5,7 +5,7 @@ RUN npm ci
 COPY apps/web/ ./
 RUN npm run build
 
-FROM golang:1.26-alpine AS server
+FROM golang:1.26.6-alpine AS server
 ARG VERSION=dev
 WORKDIR /src
 RUN apk add --no-cache git

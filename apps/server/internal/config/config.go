@@ -27,6 +27,8 @@ type Config struct {
 	DeploymentRetention int
 	BackupInterval      time.Duration
 	BackupRetention     int
+	AuditRetention      time.Duration
+	AuditMaxEvents      int
 }
 
 func Load() (Config, error) {
@@ -87,6 +89,14 @@ func Load() (Config, error) {
 	if err != nil || backupRetention < 1 {
 		return Config{}, fmt.Errorf("MINICICD_BACKUP_RETENTION must be positive")
 	}
+	auditRetention, err := time.ParseDuration(env("MINICICD_AUDIT_RETENTION", "2160h"))
+	if err != nil || auditRetention <= 0 {
+		return Config{}, fmt.Errorf("MINICICD_AUDIT_RETENTION must be positive")
+	}
+	auditMax, err := strconv.Atoi(env("MINICICD_AUDIT_MAX_EVENTS", "10000"))
+	if err != nil || auditMax < 100 {
+		return Config{}, fmt.Errorf("MINICICD_AUDIT_MAX_EVENTS must be at least 100")
+	}
 	var masterKey []byte
 	if encoded := os.Getenv("MINICICD_MASTER_KEY"); encoded != "" {
 		masterKey, err = base64.RawStdEncoding.DecodeString(encoded)
@@ -113,6 +123,8 @@ func Load() (Config, error) {
 		DeploymentRetention: deploymentRetention,
 		BackupInterval:      backupInterval,
 		BackupRetention:     backupRetention,
+		AuditRetention:      auditRetention,
+		AuditMaxEvents:      auditMax,
 	}, nil
 }
 

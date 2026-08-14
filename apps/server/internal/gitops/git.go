@@ -17,6 +17,7 @@ import (
 	"time"
 
 	"github.com/charlesfeng/mini-cicd/apps/server/internal/deployment"
+	"github.com/charlesfeng/mini-cicd/apps/server/internal/procenv"
 	"github.com/charlesfeng/mini-cicd/apps/server/internal/secret"
 )
 
@@ -193,7 +194,7 @@ func (g *Git) gitEnvironment(projectID string) ([]string, func(), error) {
 	if err != nil {
 		return nil, func() {}, err
 	}
-	env := append(os.Environ(), "GIT_TERMINAL_PROMPT=0")
+	env := append(procenv.Safe(), "GIT_TERMINAL_PROMPT=0")
 	if c.authType == "none" {
 		return env, func() {}, nil
 	}

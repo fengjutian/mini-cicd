@@ -9,7 +9,6 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
-	"os"
 	"os/exec"
 	"runtime"
 	"sync"
@@ -18,6 +17,7 @@ import (
 	"github.com/charlesfeng/mini-cicd/apps/server/internal/deployment"
 	"github.com/charlesfeng/mini-cicd/apps/server/internal/gitops"
 	"github.com/charlesfeng/mini-cicd/apps/server/internal/logstore"
+	"github.com/charlesfeng/mini-cicd/apps/server/internal/procenv"
 	"github.com/charlesfeng/mini-cicd/apps/server/internal/secret"
 	"github.com/charlesfeng/mini-cicd/apps/server/internal/workspace"
 )
@@ -308,7 +308,7 @@ func (m *Manager) environment(d deployment.Deployment) ([]string, []string, erro
 		}
 		env = append(env, name+"="+value)
 	}
-	return values, append(os.Environ(), env...), rows.Err()
+	return values, append(procenv.Safe(), env...), rows.Err()
 }
 func (m *Manager) runStep(parent context.Context, deploymentID int64, s step, dir string, env []string, w *logstore.Writer) error {
 	if err := parent.Err(); err != nil {

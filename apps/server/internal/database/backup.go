@@ -73,6 +73,22 @@ func Restore(source, destination string) (string, error) {
 	if err != nil {
 		return "", err
 	}
+	checkDB, checkErr := Open(tmpName)
+	if checkErr != nil {
+		return "", fmt.Errorf("open restored database for validation: %w", checkErr)
+	}
+	var integrity string
+	checkErr = checkDB.QueryRow(`PRAGMA quick_check`).Scan(&integrity)
+	var foreignKeyErrors int
+	if checkErr == nil {
+		checkErr = checkDB.QueryRow(`SELECT COUNT(*) FROM pragma_foreign_key_check`).Scan(&foreignKeyErrors)
+	}
+	_ = checkDB.Close()
+	_ = os.Remove(tmpName + "-wal")
+	_ = os.Remove(tmpName + "-shm")
+	if checkErr != nil || integrity != "ok" || foreignKeyErrors != 0 {
+		return "", fmt.Errorf("backup integrity validation failed: result=%q foreign_key_errors=%d error=%v", integrity, foreignKeyErrors, checkErr)
+	}
 	previous := ""
 	if _, statErr := os.Stat(dst); statErr == nil {
 		previous = dst + ".before-restore-" + time.Now().UTC().Format("20060102T150405Z")

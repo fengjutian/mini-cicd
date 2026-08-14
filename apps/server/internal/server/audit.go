@@ -51,6 +51,9 @@ func (s *Server) audit(next http.Handler) http.Handler {
 		if status == 0 {
 			status = 200
 		}
+		if userID == "" && status >= 400 {
+			return
+		}
 		action := strings.ToLower(r.Method) + " " + r.Pattern
 		if r.Pattern == "" {
 			action = strings.ToLower(r.Method) + " " + r.URL.Path

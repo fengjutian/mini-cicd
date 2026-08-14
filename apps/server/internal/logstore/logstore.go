@@ -2,9 +2,12 @@ package logstore
 
 import (
 	"bufio"
+	"encoding/base64"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net/url"
 	"os"
 	"path/filepath"
 	"sort"
@@ -160,8 +163,20 @@ func (s *Store) ReadAfter(projectID string, id, after int64) ([]Entry, error) {
 	return out, scan.Err()
 }
 func filterSecrets(in []string) []string {
-	out := []string{}
+	set := map[string]struct{}{}
 	for _, v := range in {
+		if v != "" {
+			set[v] = struct{}{}
+			if len(v) >= 4 {
+				set[base64.StdEncoding.EncodeToString([]byte(v))] = struct{}{}
+				set[base64.RawStdEncoding.EncodeToString([]byte(v))] = struct{}{}
+				set[hex.EncodeToString([]byte(v))] = struct{}{}
+				set[url.QueryEscape(v)] = struct{}{}
+			}
+		}
+	}
+	out := make([]string, 0, len(set))
+	for v := range set {
 		if v != "" {
 			out = append(out, v)
 		}
