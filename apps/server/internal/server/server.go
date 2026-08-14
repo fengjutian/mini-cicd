@@ -21,6 +21,7 @@ import (
 	"github.com/charlesfeng/mini-cicd/apps/server/internal/deployment"
 	"github.com/charlesfeng/mini-cicd/apps/server/internal/gitops"
 	"github.com/charlesfeng/mini-cicd/apps/server/internal/logstore"
+	"github.com/charlesfeng/mini-cicd/apps/server/internal/maintenance"
 	"github.com/charlesfeng/mini-cicd/apps/server/internal/project"
 	"github.com/charlesfeng/mini-cicd/apps/server/internal/runner"
 	"github.com/charlesfeng/mini-cicd/apps/server/internal/secret"
@@ -55,6 +56,7 @@ type Server struct {
 	webhookCtx    context.Context
 	webhookCancel context.CancelFunc
 	webhookWG     sync.WaitGroup
+	maintenance   *maintenance.Manager
 }
 
 func New(db *sql.DB, cfg config.Config, logger *slog.Logger) (*Server, error) {
@@ -84,6 +86,7 @@ func New(db *sql.DB, cfg config.Config, logger *slog.Logger) (*Server, error) {
 	s := &Server{db: db, cfg: cfg, logger: logger, limiter: newLoginLimiter(), projects: project.New(db, box), deps: deps, logs: logs, box: box}
 	s.webhookCtx, s.webhookCancel = context.WithCancel(context.Background())
 	s.runner = runner.New(db, deps, git, spaces, logs, box, cfg.Shell, cfg.GlobalParallel, cfg.CancelGrace, logger)
+	s.maintenance = maintenance.New(db, logs, spaces, cfg.CleanupInterval, cfg.WorkspaceRetention, cfg.LogRetention, cfg.DeploymentRetention, logger)
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /api/v1/status", s.status)
 	mux.HandleFunc("POST /api/v1/setup", s.setup)
@@ -112,11 +115,17 @@ func New(db *sql.DB, cfg config.Config, logger *slog.Logger) (*Server, error) {
 	s.handler = s.securityHeaders(s.sameOrigin(s.limitBody(mux)))
 	s.runner.Start()
 	s.recoverWebhooks()
+	s.maintenance.Start()
 	return s, nil
 }
 
 func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) { s.handler.ServeHTTP(w, r) }
-func (s *Server) Close()                                           { s.webhookCancel(); s.webhookWG.Wait(); s.runner.Stop() }
+func (s *Server) Close() {
+	s.maintenance.Stop()
+	s.webhookCancel()
+	s.webhookWG.Wait()
+	s.runner.Stop()
+}
 
 func (s *Server) health(w http.ResponseWriter, _ *http.Request) {
 	if err := s.db.Ping(); err != nil {
