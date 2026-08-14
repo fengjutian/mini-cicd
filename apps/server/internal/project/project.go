@@ -7,6 +7,8 @@ import (
 	"errors"
 	"fmt"
 	"net/url"
+	"path"
+	"path/filepath"
 	"regexp"
 	"strings"
 	"time"
@@ -386,6 +388,13 @@ func validate(in *Input) error {
 		for _, step := range steps {
 			if strings.TrimSpace(step.Name) == "" || strings.TrimSpace(step.Command) == "" {
 				return errors.New("every step requires a name and command")
+			}
+			dir := strings.TrimSpace(step.WorkingDirectory)
+			if dir != "" {
+				clean := path.Clean(strings.ReplaceAll(dir, `\`, "/"))
+				if path.IsAbs(clean) || filepath.IsAbs(dir) || filepath.VolumeName(dir) != "" || clean == ".." || strings.HasPrefix(clean, "../") {
+					return errors.New("step working directory must stay inside the repository")
+				}
 			}
 		}
 	}

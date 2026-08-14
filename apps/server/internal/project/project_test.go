@@ -71,3 +71,24 @@ func TestProjectCRUDAndEncryptedVersions(t *testing.T) {
 		t.Fatal("archived project remained visible")
 	}
 }
+
+func TestRejectsStepWorkingDirectoryOutsideRepository(t *testing.T) {
+	db, err := database.Open(filepath.Join(t.TempDir(), "test.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	if err = database.Migrate(db); err != nil {
+		t.Fatal(err)
+	}
+	box, _ := secret.New(bytes.Repeat([]byte{5}, 32))
+	s := New(db, box)
+	in := Input{Name: "App", Slug: "app", RepositoryURL: "https://example.com/app.git", Branch: "main", AuthType: "none", BuildSteps: []Step{{Name: "Build", Command: "echo ok", WorkingDirectory: "../outside"}}}
+	if _, err = s.Create(context.Background(), in); err == nil {
+		t.Fatal("expected parent working directory to be rejected")
+	}
+	in.BuildSteps[0].WorkingDirectory = filepath.Join(string(filepath.Separator), "outside")
+	if _, err = s.Create(context.Background(), in); err == nil {
+		t.Fatal("expected absolute working directory to be rejected")
+	}
+}
