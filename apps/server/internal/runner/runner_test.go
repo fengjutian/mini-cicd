@@ -189,6 +189,24 @@ func TestStepTimeout(t *testing.T) {
 	}
 }
 
+func TestDeploymentTimeout(t *testing.T) {
+	command := "sleep 30"
+	if runtime.GOOS == "windows" {
+		command = "Start-Sleep -Seconds 30"
+	}
+	f := newFixture(t, []project.Step{{Name: "timeout", Command: command}})
+	_, _ = f.db.Exec(`UPDATE projects SET step_timeout_seconds=10,deployment_timeout_seconds=1 WHERE id='p'`)
+	d, err := f.deps.Create(context.Background(), "p", "manual")
+	if err != nil {
+		t.Fatal(err)
+	}
+	f.manager.Wake()
+	done := waitTerminal(t, f.deps, d.ID, 10*time.Second)
+	if done.Status != "timed_out" {
+		t.Fatalf("status=%s error=%s", done.Status, done.ErrorSummary)
+	}
+}
+
 func TestRecoveryFailsInterruptedTaskAndReleasesLock(t *testing.T) {
 	f := newFixture(t, nil)
 	f.manager.Stop()

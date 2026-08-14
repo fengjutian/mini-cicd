@@ -103,3 +103,24 @@ func TestCancelIsIdempotent(t *testing.T) {
 		t.Fatalf("got %s", got.Status)
 	}
 }
+
+func TestCancellationWinsFinishRace(t *testing.T) {
+	db := testDB(t)
+	insertProject(t, db, "one")
+	s := New(db, fakeResolver{})
+	d, _ := s.Create(context.Background(), "one", "manual")
+	claimed, ok, err := s.Claim(context.Background(), "runner")
+	if err != nil || !ok {
+		t.Fatalf("claim: %v %v", ok, err)
+	}
+	if err = s.Cancel(context.Background(), claimed.ID); err != nil {
+		t.Fatal(err)
+	}
+	if err = s.Finish(context.Background(), claimed.ID, "succeeded", ""); err != nil {
+		t.Fatal(err)
+	}
+	got, _ := s.Get(context.Background(), d.ID)
+	if got.Status != "cancelled" {
+		t.Fatalf("cancel was overwritten by %s", got.Status)
+	}
+}

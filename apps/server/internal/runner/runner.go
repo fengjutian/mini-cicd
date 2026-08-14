@@ -167,6 +167,7 @@ func (m *Manager) run(d deployment.Deployment) error {
 		return err
 	}
 	if err = m.git.Checkout(ctx, d.ProjectID, repo, d.CommitSHA, space); err != nil {
+		_ = writer.WriteStep(0, "system", "checkout failed: "+err.Error())
 		if ctx.Err() != nil {
 			return ctx.Err()
 		}
@@ -203,10 +204,17 @@ func (m *Manager) run(d deployment.Deployment) error {
 			return err
 		}
 		if err = m.runStep(ctx, d.ID, x, dir, env, writer); err != nil {
+			_ = writer.WriteStep(x.id, "system", "step failed: "+err.Error())
 			return err
 		}
 	}
-	return nil
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	if yes, _ := m.cancelled(d.ID); yes {
+		return context.Canceled
+	}
+	return writer.WriteStep(0, "system", "deployment succeeded")
 }
 func (m *Manager) environment(d deployment.Deployment) ([]string, []string, error) {
 	rows, err := m.db.Query(`SELECT name,is_secret,COALESCE(plain_value,''),cipher_value FROM deployment_variables WHERE deployment_id=?`, d.ID)

@@ -181,6 +181,17 @@ func (s *Service) Finish(ctx context.Context, id int64, status, message string) 
 		return err
 	}
 	defer tx.Rollback()
+	var current string
+	if err = tx.QueryRowContext(ctx, `SELECT status FROM deployments WHERE id=?`, id).Scan(&current); err != nil {
+		return err
+	}
+	if current == "succeeded" || current == "failed" || current == "cancelled" || current == "timed_out" {
+		return nil
+	}
+	if current == "cancelling" && status == "succeeded" {
+		status = "cancelled"
+		message = ""
+	}
 	now := time.Now().UTC().Format(time.RFC3339Nano)
 	if _, err = tx.ExecContext(ctx, `UPDATE deployments SET status=?,error_summary=?,finished_at=? WHERE id=? AND status NOT IN ('succeeded','failed','cancelled','timed_out')`, status, message, now, id); err != nil {
 		return err
