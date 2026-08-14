@@ -52,6 +52,10 @@ go run ./apps/server/cmd/minicicd
 | `MINICICD_SHELL` | Linux `/bin/bash` | Local Pipeline 使用的固定 Shell |
 | `MINICICD_LOG_MAX_BYTES` | `10485760` | 单次部署日志上限 |
 | `MINICICD_CANCEL_GRACE` | `10s` | 强制终止前的等待时间 |
+| `MINICICD_CLEANUP_INTERVAL` | `1h` | 后台清理周期 |
+| `MINICICD_WORKSPACE_RETENTION` | `24h` | 终态部署工作区保留时间 |
+| `MINICICD_LOG_RETENTION` | `720h` | 部署日志保留时间 |
+| `MINICICD_DEPLOYMENT_RETENTION` | `100` | 每个项目保留的部署记录数 |
 
 生产环境必须通过 HTTPS 提供服务，并将 `MINICICD_SECURE_COOKIES` 设置为 `true`。只有在服务位于可信反向代理后方时才能开启 `MINICICD_TRUST_PROXY`。
 
@@ -81,8 +85,14 @@ $bytes = New-Object byte[] 32
 | `PUT/DELETE` | `/api/v1/projects/{id}/variables/{name}` | 更新或删除变量 |
 | `POST/GET` | `/api/v1/projects/{id}/deployments` | 创建部署或查看项目部署历史 |
 | `GET` | `/api/v1/deployments/{id}` | 部署详情 |
+| `GET` | `/api/v1/deployments/{id}/steps` | 部署步骤与执行结果 |
 | `POST` | `/api/v1/deployments/{id}/cancel` | 幂等取消部署 |
+| `POST` | `/api/v1/deployments/{id}/redeploy` | 重新部署历史 Commit |
 | `GET` | `/api/v1/deployments/{id}/logs` | SSE 部署日志，支持 `Last-Event-ID` |
+| `GET` | `/api/v1/dashboard` | Dashboard 统计 |
+| `POST` | `/api/v1/webhooks/{projectId}/{provider}` | GitHub、GitLab 或 Gitea Push Webhook |
+
+生产安装、反向代理和 Webhook 配置见 [docs/deployment.md](docs/deployment.md)。
 
 ## 验证
 

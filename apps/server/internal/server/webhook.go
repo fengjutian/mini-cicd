@@ -133,6 +133,9 @@ func verifyWebhook(provider string, r *http.Request, body, secret []byte) bool {
 	header, prefix := "X-Gitea-Signature", ""
 	if provider == "github" {
 		header, prefix = "X-Hub-Signature-256", "sha256="
+		if !strings.HasPrefix(r.Header.Get(header), prefix) {
+			return false
+		}
 	}
 	decoded, err := hex.DecodeString(strings.TrimPrefix(r.Header.Get(header), prefix))
 	return err == nil && hmac.Equal(decoded, mac.Sum(nil))
@@ -142,7 +145,7 @@ func sameRepository(a, b string) bool {
 	normalize := func(v string) string {
 		return strings.TrimSuffix(strings.TrimSuffix(strings.TrimSpace(v), "/"), ".git")
 	}
-	return b != "" && strings.EqualFold(normalize(a), normalize(b))
+	return b != "" && normalize(a) == normalize(b)
 }
 
 func (s *Server) startWebhook(deliveryID int64, projectID, sha string) {

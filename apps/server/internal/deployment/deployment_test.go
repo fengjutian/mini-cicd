@@ -124,3 +124,23 @@ func TestCancellationWinsFinishRace(t *testing.T) {
 		t.Fatalf("cancel was overwritten by %s", got.Status)
 	}
 }
+
+func TestCreateAtCommitAndHealthSnapshot(t *testing.T) {
+	db := testDB(t)
+	insertProject(t, db, "one")
+	_, _ = db.Exec(`UPDATE projects SET health_enabled=1,health_url='http://127.0.0.1/health',health_retries=2 WHERE id='one'`)
+	s := New(db, fakeResolver{})
+	d, err := s.CreateAtCommit(context.Background(), "one", "redeploy", "0123456789012345678901234567890123456789")
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, _ = db.Exec(`UPDATE projects SET health_enabled=0,health_url='' WHERE id='one'`)
+	var enabled bool
+	var url string
+	if err = db.QueryRow(`SELECT health_enabled,health_url FROM deployments WHERE id=?`, d.ID).Scan(&enabled, &url); err != nil {
+		t.Fatal(err)
+	}
+	if !enabled || url != "http://127.0.0.1/health" {
+		t.Fatalf("health snapshot changed: %v %q", enabled, url)
+	}
+}

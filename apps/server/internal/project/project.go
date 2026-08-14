@@ -422,7 +422,7 @@ func scanProject(row scanner) (Project, error) {
 
 func parseStatusRange(value string) (int, int, error) {
 	var low, high int
-	if _, err := fmt.Sscanf(value, "%d-%d", &low, &high); err != nil || low < 100 || high > 599 || low > high {
+	if _, err := fmt.Sscanf(value, "%d-%d", &low, &high); err != nil || fmt.Sprintf("%d-%d", low, high) != value || low < 100 || high > 599 || low > high {
 		return 0, 0, errors.New("healthExpectedStatus must be a range such as 200-299")
 	}
 	return low, high, nil
