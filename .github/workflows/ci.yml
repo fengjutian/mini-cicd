@@ -18,12 +18,15 @@ jobs:
         working-directory: apps/web
       - run: npm test
         working-directory: apps/web
+      - run: npm audit --omit=dev --audit-level=high
+        working-directory: apps/web
       - run: npx playwright install --with-deps chromium
       - run: npm run test:e2e
         working-directory: apps/web
         env: {MINICICD_E2E_DATA_DIR: '/tmp/minicicd-e2e-${{ github.run_id }}'}
       - run: go test -race ./...
       - run: go vet ./...
+      - run: go run golang.org/x/vuln/cmd/govulncheck@latest ./apps/server/...
       - run: go build ./apps/server/cmd/minicicd
   ssh-private-repository:
     if: github.event_name == 'push' && secrets.SSH_TEST_REPOSITORY != ''

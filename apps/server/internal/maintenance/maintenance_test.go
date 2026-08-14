@@ -50,15 +50,19 @@ func TestRunOnceCleansAndPrunes(t *testing.T) {
 		_ = w.Close()
 		_, _ = db.Exec(`UPDATE deployments SET workspace_path=?,log_path=? WHERE id=?`, space, logs.Path("p", id), id)
 	}
-	m := New(db, logs, spaces, time.Hour, time.Nanosecond, time.Nanosecond, 1, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	for i := 0; i < 5; i++ {
+		_, _ = db.Exec(`INSERT INTO audit_events(action,status_code,created_at) VALUES('test',200,?)`, time.Now().UTC().Format(time.RFC3339Nano))
+	}
+	m := New(db, logs, spaces, time.Hour, time.Nanosecond, time.Nanosecond, 1, slog.New(slog.NewTextHandler(io.Discard, nil))).ConfigureAudit(time.Hour, 2)
 	if err = m.RunOnce(context.Background()); err != nil {
 		t.Fatal(err)
 	}
-	var sessions, deployments, paths int
+	var sessions, deployments, paths, audits int
 	_ = db.QueryRow(`SELECT COUNT(*) FROM sessions`).Scan(&sessions)
 	_ = db.QueryRow(`SELECT COUNT(*) FROM deployments`).Scan(&deployments)
 	_ = db.QueryRow(`SELECT COUNT(*) FROM deployments WHERE workspace_path IS NOT NULL OR log_path IS NOT NULL`).Scan(&paths)
-	if sessions != 0 || deployments != 1 || paths != 0 {
-		t.Fatalf("sessions=%d deployments=%d paths=%d", sessions, deployments, paths)
+	_ = db.QueryRow(`SELECT COUNT(*) FROM audit_events`).Scan(&audits)
+	if sessions != 0 || deployments != 1 || paths != 0 || audits != 2 {
+		t.Fatalf("sessions=%d deployments=%d paths=%d audits=%d", sessions, deployments, paths, audits)
 	}
 }

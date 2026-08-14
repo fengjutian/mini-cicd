@@ -3,6 +3,8 @@ package config
 import (
 	"encoding/base64"
 	"fmt"
+	"net"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -27,6 +29,7 @@ type Config struct {
 	DeploymentRetention int
 	BackupInterval      time.Duration
 	BackupRetention     int
+	PublicURL           string
 	AuditRetention      time.Duration
 	AuditMaxEvents      int
 }
@@ -48,6 +51,22 @@ func Load() (Config, error) {
 	secure, err := strconv.ParseBool(env("MINICICD_SECURE_COOKIES", "false"))
 	if err != nil {
 		return Config{}, fmt.Errorf("MINICICD_SECURE_COOKIES must be true or false")
+	}
+	publicURL := os.Getenv("MINICICD_PUBLIC_URL")
+	if publicURL != "" {
+		parsed, e := url.Parse(publicURL)
+		if e != nil || parsed.Host == "" || (parsed.Scheme != "http" && parsed.Scheme != "https") {
+			return Config{}, fmt.Errorf("MINICICD_PUBLIC_URL must be an absolute HTTP or HTTPS URL")
+		}
+		if parsed.Scheme == "https" {
+			secure = true
+		} else {
+			host := parsed.Hostname()
+			ip := net.ParseIP(host)
+			if host != "localhost" && (ip == nil || !ip.IsLoopback()) {
+				return Config{}, fmt.Errorf("non-local MINICICD_PUBLIC_URL must use HTTPS")
+			}
+		}
 	}
 	trustProxy, err := strconv.ParseBool(env("MINICICD_TRUST_PROXY", "false"))
 	if err != nil {
@@ -100,6 +119,7 @@ func Load() (Config, error) {
 	var masterKey []byte
 	if encoded := os.Getenv("MINICICD_MASTER_KEY"); encoded != "" {
 		masterKey, err = base64.RawStdEncoding.DecodeString(encoded)
+		_ = os.Unsetenv("MINICICD_MASTER_KEY")
 		if err != nil || len(masterKey) != 32 {
 			return Config{}, fmt.Errorf("MINICICD_MASTER_KEY must be an unpadded base64-encoded 32-byte key")
 		}
@@ -123,6 +143,7 @@ func Load() (Config, error) {
 		DeploymentRetention: deploymentRetention,
 		BackupInterval:      backupInterval,
 		BackupRetention:     backupRetention,
+		PublicURL:           publicURL,
 		AuditRetention:      auditRetention,
 		AuditMaxEvents:      auditMax,
 	}, nil

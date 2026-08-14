@@ -115,6 +115,10 @@ func TestSetupValidation(t *testing.T) {
 	if rec.Code != http.StatusUnprocessableEntity {
 		t.Fatalf("invalid setup returned %d: %s", rec.Code, rec.Body.String())
 	}
+	var count int
+	if err := handler.(*Server).db.QueryRow(`SELECT COUNT(*) FROM audit_events`).Scan(&count); err != nil || count != 0 {
+		t.Fatalf("anonymous failure was audited: count=%d err=%v", count, err)
+	}
 }
 
 func TestRejectsCrossOriginMutation(t *testing.T) {

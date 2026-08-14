@@ -238,7 +238,7 @@ func (m *Manager) runHealth(ctx context.Context, id int64, w *logstore.Writer) e
 	if _, err := fmt.Sscanf(expected, "%d-%d", &low, &high); err != nil {
 		return errors.New("invalid health status range snapshot")
 	}
-	client := &http.Client{Timeout: time.Duration(timeout) * time.Second, CheckRedirect: func(_ *http.Request, _ []*http.Request) error { return http.ErrUseLastResponse }}
+	client := &http.Client{Transport: safeHealthTransport(), Timeout: time.Duration(timeout) * time.Second, CheckRedirect: func(_ *http.Request, _ []*http.Request) error { return http.ErrUseLastResponse }}
 	var last string
 	for attempt := 1; attempt <= retries; attempt++ {
 		if err := ctx.Err(); err != nil {

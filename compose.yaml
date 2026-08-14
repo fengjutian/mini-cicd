@@ -5,10 +5,15 @@ services:
       args: {VERSION: local}
     image: mini-cicd:local
     restart: unless-stopped
+    security_opt: ["no-new-privileges:true"]
+    cap_drop: ["ALL"]
+    read_only: true
+    tmpfs: ["/tmp:rw,nosuid,nodev,size=256m"]
     ports: ["127.0.0.1:8080:8080"]
     environment:
       MINICICD_MASTER_KEY: ${MINICICD_MASTER_KEY:?set MINICICD_MASTER_KEY}
       MINICICD_SECURE_COOKIES: "false"
+      MINICICD_PUBLIC_URL: http://localhost:8080
       MINICICD_BACKUP_INTERVAL: 24h
       MINICICD_BACKUP_RETENTION: 7
     volumes: ["minicicd-data:/var/lib/minicicd"]
