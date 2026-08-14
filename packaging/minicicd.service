@@ -1,7 +1,8 @@
 [Unit]
 Description=mini-ci-cd local deployment service
-After=network-online.target
+After=network-online.target minicicd-runner.service
 Wants=network-online.target
+Requires=minicicd-runner.service
 
 [Service]
 Type=simple
@@ -21,8 +22,9 @@ ProtectControlGroups=true
 RestrictSUIDSGID=true
 LockPersonality=true
 CapabilityBoundingSet=
-UMask=0077
+UMask=0007
 ReadWritePaths=/var/lib/minicicd
+SupplementaryGroups=minicicd-control minicicd-workspace
 
 [Install]
 WantedBy=multi-user.target

@@ -12,6 +12,7 @@ import (
 	"net/http"
 	"net/mail"
 	"net/url"
+	"os"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -79,7 +80,11 @@ func New(db *sql.DB, cfg config.Config, logger *slog.Logger) (*Server, error) {
 	}
 	git := gitops.New(cfg.DataDir, db, box)
 	deps := deployment.New(db, git)
-	spaces, err := workspace.New(cfg.DataDir)
+	workspaceMode := os.FileMode(0o700)
+	if cfg.RunnerEndpoint != "" {
+		workspaceMode = 0o770
+	}
+	spaces, err := workspace.NewRoot(cfg.RunnerWorkspaceDir, workspaceMode)
 	if err != nil {
 		return nil, err
 	}
@@ -89,7 +94,7 @@ func New(db *sql.DB, cfg config.Config, logger *slog.Logger) (*Server, error) {
 	}
 	s := &Server{db: db, cfg: cfg, logger: logger, limiter: newLoginLimiter(), webhookLimiter: newRequestLimiter(120), projects: project.New(db, box), deps: deps, logs: logs, box: box}
 	s.webhookCtx, s.webhookCancel = context.WithCancel(context.Background())
-	s.runner = runner.New(db, deps, git, spaces, logs, box, cfg.Shell, cfg.GlobalParallel, cfg.CancelGrace, logger)
+	s.runner = runner.New(db, deps, git, spaces, logs, box, cfg.Shell, cfg.GlobalParallel, cfg.CancelGrace, logger).UseRemote(cfg.RunnerEndpoint)
 	s.maintenance = maintenance.New(db, logs, spaces, cfg.CleanupInterval, cfg.WorkspaceRetention, cfg.LogRetention, cfg.DeploymentRetention, logger).ConfigureBackups(cfg.DatabasePath, filepath.Join(cfg.DataDir, "backups"), cfg.BackupInterval, cfg.BackupRetention).ConfigureAudit(cfg.AuditRetention, cfg.AuditMaxEvents)
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /api/v1/status", s.status)

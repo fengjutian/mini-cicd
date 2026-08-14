@@ -9,16 +9,25 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"strconv"
 	"syscall"
 	"time"
 
 	"github.com/charlesfeng/mini-cicd/apps/server/internal/config"
 	"github.com/charlesfeng/mini-cicd/apps/server/internal/database"
+	"github.com/charlesfeng/mini-cicd/apps/server/internal/runneripc"
 	webserver "github.com/charlesfeng/mini-cicd/apps/server/internal/server"
 )
 
 func main() {
 	logger := slog.New(slog.NewTextHandler(os.Stdout, nil))
+	if len(os.Args) > 1 && os.Args[1] == "runner" {
+		if err := runnerCommand(logger); err != nil {
+			logger.Error("runner stopped", "error", err)
+			os.Exit(1)
+		}
+		return
+	}
 	cfg, err := config.Load()
 	if err != nil {
 		logger.Error("invalid configuration", "error", err)
@@ -76,6 +85,29 @@ func main() {
 	if err := httpServer.Shutdown(ctx); err != nil {
 		logger.Error("graceful shutdown failed", "error", err)
 	}
+}
+
+func runnerCommand(logger *slog.Logger) error {
+	socket := os.Getenv("MINICICD_RUNNER_SOCKET")
+	root := os.Getenv("MINICICD_RUNNER_WORKSPACE_DIR")
+	shell := os.Getenv("MINICICD_SHELL")
+	socketGID, e1 := strconv.Atoi(os.Getenv("MINICICD_RUNNER_SOCKET_GID"))
+	jobUID, e2 := strconv.Atoi(os.Getenv("MINICICD_RUNNER_JOB_UID"))
+	jobGID, e3 := strconv.Atoi(os.Getenv("MINICICD_RUNNER_JOB_GID"))
+	if socket == "" || root == "" || e1 != nil || e2 != nil || e3 != nil {
+		return errors.New("runner requires socket, workspace and numeric socket/job UID/GID configuration")
+	}
+	if shell == "" {
+		shell = "/bin/bash"
+	}
+	server, err := runneripc.NewServer(socket, root, shell, socketGID, jobUID, jobGID, logger)
+	if err != nil {
+		return err
+	}
+	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer cancel()
+	logger.Info("isolated runner started", "socket", socket, "workspace", root, "job_uid", jobUID)
+	return server.Serve(ctx)
 }
 
 func databaseCommand(cfg config.Config, command string, args []string) error {

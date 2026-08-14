@@ -77,7 +77,11 @@ func (s *Server) systemChecks(w http.ResponseWriter, r *http.Request) {
 		secretStatus, secretDetail = "warning", "master key is not configured; secrets cannot be stored"
 	}
 	checks = append(checks, check{"secret_encryption", secretStatus, secretDetail})
-	checks = append(checks, check{"runner_isolation", "warning", "Local Runner commands are not yet isolated by a separate OS user or container"})
+	runnerStatus, runnerDetail := "warning", "in-process Local Runner; use MINICICD_RUNNER_ENDPOINT in production"
+	if s.cfg.RunnerEndpoint != "" {
+		runnerStatus, runnerDetail = "ok", "isolated Runner socket: "+s.cfg.RunnerEndpoint
+	}
+	checks = append(checks, check{"runner_isolation", runnerStatus, runnerDetail})
 	overall := "ok"
 	for _, c := range checks {
 		if c.Status == "error" {

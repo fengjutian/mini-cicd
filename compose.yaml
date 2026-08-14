@@ -1,21 +1,41 @@
 services:
-  minicicd:
-    build:
-      context: .
-      args: {VERSION: local}
+  runner:
+    build: {context: ., args: {VERSION: local}}
     image: mini-cicd:local
+    user: "0:0"
+    command: ["runner"]
     restart: unless-stopped
+    read_only: true
     security_opt: ["no-new-privileges:true"]
     cap_drop: ["ALL"]
-    read_only: true
+    cap_add: ["SETUID", "SETGID", "CHOWN", "KILL"]
+    environment:
+      MINICICD_RUNNER_SOCKET: /run/minicicd/runner.sock
+      MINICICD_RUNNER_WORKSPACE_DIR: /var/lib/minicicd-workspaces
+      MINICICD_RUNNER_SOCKET_GID: "10000"
+      MINICICD_RUNNER_JOB_UID: "10001"
+      MINICICD_RUNNER_JOB_GID: "10001"
+      MINICICD_SHELL: /bin/bash
+    volumes: ["runner-workspaces:/var/lib/minicicd-workspaces", "runner-socket:/run/minicicd"]
     tmpfs: ["/tmp:rw,nosuid,nodev,size=256m"]
+  minicicd:
+    build: {context: ., args: {VERSION: local}}
+    image: mini-cicd:local
+    depends_on: [runner]
+    restart: unless-stopped
+    group_add: ["10001"]
     ports: ["127.0.0.1:8080:8080"]
+    read_only: true
+    security_opt: ["no-new-privileges:true"]
+    cap_drop: ["ALL"]
     environment:
       MINICICD_MASTER_KEY: ${MINICICD_MASTER_KEY:?set MINICICD_MASTER_KEY}
-      MINICICD_SECURE_COOKIES: "false"
       MINICICD_PUBLIC_URL: http://localhost:8080
-      MINICICD_BACKUP_INTERVAL: 24h
-      MINICICD_BACKUP_RETENTION: 7
-    volumes: ["minicicd-data:/var/lib/minicicd"]
+      MINICICD_RUNNER_ENDPOINT: /run/minicicd/runner.sock
+      MINICICD_RUNNER_WORKSPACE_DIR: /var/lib/minicicd-workspaces
+    volumes: ["minicicd-data:/var/lib/minicicd", "runner-workspaces:/var/lib/minicicd-workspaces", "runner-socket:/run/minicicd"]
+    tmpfs: ["/tmp:rw,nosuid,nodev,size=256m"]
 volumes:
   minicicd-data:
+  runner-workspaces:
+  runner-socket:

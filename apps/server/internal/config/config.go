@@ -32,6 +32,8 @@ type Config struct {
 	PublicURL           string
 	AuditRetention      time.Duration
 	AuditMaxEvents      int
+	RunnerEndpoint      string
+	RunnerWorkspaceDir  string
 }
 
 func Load() (Config, error) {
@@ -146,6 +148,8 @@ func Load() (Config, error) {
 		PublicURL:           publicURL,
 		AuditRetention:      auditRetention,
 		AuditMaxEvents:      auditMax,
+		RunnerEndpoint:      os.Getenv("MINICICD_RUNNER_ENDPOINT"),
+		RunnerWorkspaceDir:  env("MINICICD_RUNNER_WORKSPACE_DIR", filepath.Join(absDataDir, "workspaces")),
 	}, nil
 }
 

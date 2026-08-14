@@ -9,14 +9,20 @@ import (
 	"strings"
 )
 
-type Manager struct{ root string }
+type Manager struct {
+	root string
+	mode os.FileMode
+}
 
 func New(dataDir string) (*Manager, error) {
-	root, err := filepath.Abs(filepath.Join(dataDir, "workspaces"))
+	return NewRoot(filepath.Join(dataDir, "workspaces"), 0700)
+}
+func NewRoot(path string, mode os.FileMode) (*Manager, error) {
+	root, err := filepath.Abs(path)
 	if err != nil {
 		return nil, err
 	}
-	if err = os.MkdirAll(root, 0700); err != nil {
+	if err = os.MkdirAll(root, mode); err != nil {
 		return nil, err
 	}
 	if runtime.GOOS != "windows" {
@@ -26,7 +32,7 @@ func New(dataDir string) (*Manager, error) {
 			return nil, e
 		}
 	}
-	return &Manager{root: root}, nil
+	return &Manager{root: root, mode: mode}, nil
 }
 func (m *Manager) Create(projectID string, deploymentID int64) (string, error) {
 	if !safeID(projectID) {
@@ -39,7 +45,7 @@ func (m *Manager) Create(projectID string, deploymentID int64) (string, error) {
 	if entries, err := os.ReadDir(path); err == nil && len(entries) > 0 {
 		return "", errors.New("workspace already exists and is not empty")
 	}
-	if err := os.MkdirAll(path, 0700); err != nil {
+	if err := os.MkdirAll(path, m.mode); err != nil {
 		return "", err
 	}
 	return filepath.Abs(path)

@@ -18,6 +18,7 @@ import (
 	"github.com/charlesfeng/mini-cicd/apps/server/internal/gitops"
 	"github.com/charlesfeng/mini-cicd/apps/server/internal/logstore"
 	"github.com/charlesfeng/mini-cicd/apps/server/internal/procenv"
+	"github.com/charlesfeng/mini-cicd/apps/server/internal/runneripc"
 	"github.com/charlesfeng/mini-cicd/apps/server/internal/secret"
 	"github.com/charlesfeng/mini-cicd/apps/server/internal/workspace"
 )
@@ -34,10 +35,14 @@ type Manager struct {
 	grace    time.Duration
 	logger   *slog.Logger
 	wake     chan struct{}
+	endpoint string
 	wg       sync.WaitGroup
 	ctx      context.Context
 	cancel   context.CancelFunc
 }
+
+func (m *Manager) UseRemote(endpoint string) *Manager { m.endpoint = endpoint; return m }
+
 type step struct {
 	id           int64
 	command, dir string
@@ -319,6 +324,24 @@ func (m *Manager) runStep(parent context.Context, deploymentID int64, s step, di
 	now := time.Now().UTC().Format(time.RFC3339Nano)
 	_, _ = m.db.Exec(`UPDATE deployment_steps SET status='running',started_at=? WHERE id=?`, now, s.id)
 	if err := w.WriteStep(s.id, "system", "$ "+s.command); err != nil {
+		return err
+	}
+	if m.endpoint != "" {
+		err := runneripc.Execute(ctx, m.endpoint, runneripc.Request{Command: s.command, Directory: dir, Environment: env, TimeoutSeconds: int(s.timeout / time.Second)}, func(line string) error { return w.WriteStep(s.id, "output", line) })
+		finished := time.Now().UTC().Format(time.RFC3339Nano)
+		status := "succeeded"
+		var exit any = 0
+		if err != nil {
+			status = "failed"
+			exit = nil
+			if errors.Is(err, context.Canceled) {
+				status = "cancelled"
+			}
+			if errors.Is(err, context.DeadlineExceeded) {
+				status = "timed_out"
+			}
+		}
+		_, _ = m.db.Exec(`UPDATE deployment_steps SET status=?,exit_code=?,finished_at=? WHERE id=?`, status, exit, finished, s.id)
 		return err
 	}
 	args := []string{"-lc", s.command}

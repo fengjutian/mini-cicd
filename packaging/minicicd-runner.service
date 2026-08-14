@@ -1,0 +1,31 @@
+[Unit]
+Description=mini-ci-cd isolated Local Runner
+After=network-online.target
+
+[Service]
+Type=simple
+User=root
+Group=root
+EnvironmentFile=/etc/minicicd/runner.env
+ExecStartPre=/bin/chgrp minicicd-control /run/minicicd
+ExecStart=/usr/local/bin/minicicd runner
+Restart=on-failure
+RestartSec=5
+RuntimeDirectory=minicicd
+RuntimeDirectoryMode=0750
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+LockPersonality=true
+CapabilityBoundingSet=CAP_SETUID CAP_SETGID CAP_CHOWN CAP_KILL
+AmbientCapabilities=CAP_SETUID CAP_SETGID CAP_CHOWN CAP_KILL
+UMask=0007
+ReadWritePaths=/var/lib/minicicd-workspaces /run/minicicd
+
+[Install]
+WantedBy=multi-user.target
