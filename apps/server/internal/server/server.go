@@ -93,6 +93,10 @@ func New(db *sql.DB, cfg config.Config, logger *slog.Logger) (*Server, error) {
 	mux.HandleFunc("POST /api/v1/auth/login", s.login)
 	mux.HandleFunc("POST /api/v1/auth/logout", s.requireAuth(s.logout))
 	mux.HandleFunc("GET /api/v1/auth/me", s.requireAuth(s.me))
+	mux.HandleFunc("PUT /api/v1/auth/password", s.requireAuth(s.changePassword))
+	mux.HandleFunc("GET /api/v1/auth/sessions", s.requireAuth(s.listSessions))
+	mux.HandleFunc("DELETE /api/v1/auth/sessions/{id}", s.requireAuth(s.deleteSession))
+	mux.HandleFunc("GET /api/v1/system/checks", s.requireAuth(s.systemChecks))
 	mux.HandleFunc("GET /api/v1/projects", s.requireAuth(s.listProjects))
 	mux.HandleFunc("POST /api/v1/projects", s.requireAuth(s.createProject))
 	mux.HandleFunc("GET /api/v1/projects/{id}", s.requireAuth(s.getProject))
@@ -103,6 +107,7 @@ func New(db *sql.DB, cfg config.Config, logger *slog.Logger) (*Server, error) {
 	mux.HandleFunc("DELETE /api/v1/projects/{id}/variables/{name}", s.requireAuth(s.deleteVariable))
 	mux.HandleFunc("POST /api/v1/projects/{id}/deployments", s.requireAuth(s.createDeployment))
 	mux.HandleFunc("GET /api/v1/projects/{id}/deployments", s.requireAuth(s.listDeployments))
+	mux.HandleFunc("GET /api/v1/projects/{id}/webhook-deliveries", s.requireAuth(s.listWebhookDeliveries))
 	mux.HandleFunc("GET /api/v1/deployments/{id}", s.requireAuth(s.getDeployment))
 	mux.HandleFunc("GET /api/v1/deployments/{id}/steps", s.requireAuth(s.deploymentSteps))
 	mux.HandleFunc("POST /api/v1/deployments/{id}/cancel", s.requireAuth(s.cancelDeployment))
@@ -211,8 +216,8 @@ func (s *Server) setup(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "internal_error", "Could not create a session.")
 		return
 	}
-	if _, err := tx.ExecContext(r.Context(), `INSERT INTO sessions(id_hash,user_id,created_at,expires_at,last_seen_at) VALUES(?,?,?,?,?)`,
-		tokenHash, userID, now.Format(time.RFC3339Nano), now.Add(s.cfg.SessionTTL).Format(time.RFC3339Nano), now.Format(time.RFC3339Nano)); err != nil {
+	if _, err := tx.ExecContext(r.Context(), `INSERT INTO sessions(id_hash,user_id,created_at,expires_at,last_seen_at,ip_address,user_agent) VALUES(?,?,?,?,?,?,?)`,
+		tokenHash, userID, now.Format(time.RFC3339Nano), now.Add(s.cfg.SessionTTL).Format(time.RFC3339Nano), now.Format(time.RFC3339Nano), s.clientIP(r), r.UserAgent()); err != nil {
 		writeError(w, http.StatusInternalServerError, "internal_error", "Could not create a session.")
 		return
 	}
@@ -255,8 +260,8 @@ func (s *Server) login(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	now := time.Now().UTC()
-	if _, err := s.db.ExecContext(r.Context(), `INSERT INTO sessions(id_hash,user_id,created_at,expires_at,last_seen_at) VALUES(?,?,?,?,?)`,
-		tokenHash, u.ID, now.Format(time.RFC3339Nano), now.Add(s.cfg.SessionTTL).Format(time.RFC3339Nano), now.Format(time.RFC3339Nano)); err != nil {
+	if _, err := s.db.ExecContext(r.Context(), `INSERT INTO sessions(id_hash,user_id,created_at,expires_at,last_seen_at,ip_address,user_agent) VALUES(?,?,?,?,?,?,?)`,
+		tokenHash, u.ID, now.Format(time.RFC3339Nano), now.Add(s.cfg.SessionTTL).Format(time.RFC3339Nano), now.Format(time.RFC3339Nano), s.clientIP(r), r.UserAgent()); err != nil {
 		writeError(w, http.StatusInternalServerError, "internal_error", "Could not create a session.")
 		return
 	}

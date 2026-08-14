@@ -198,7 +198,19 @@ INSERT OR IGNORE INTO schema_migrations(version) VALUES (3);`
 	if err != nil {
 		return err
 	}
-	return ensureColumn(db, "webhook_deliveries", "commit_sha", "TEXT NOT NULL DEFAULT ''")
+	if err = ensureColumn(db, "webhook_deliveries", "commit_sha", "TEXT NOT NULL DEFAULT ''"); err != nil {
+		return err
+	}
+	for _, column := range []struct{ name, definition string }{
+		{"ip_address", "TEXT NOT NULL DEFAULT ''"},
+		{"user_agent", "TEXT NOT NULL DEFAULT ''"},
+	} {
+		if err = ensureColumn(db, "sessions", column.name, column.definition); err != nil {
+			return err
+		}
+	}
+	_, err = db.Exec(`INSERT OR IGNORE INTO schema_migrations(version) VALUES (4)`)
+	return err
 }
 
 func ensureColumn(db *sql.DB, table, name, definition string) error {

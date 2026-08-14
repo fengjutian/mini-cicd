@@ -29,6 +29,32 @@ type webhookPayload struct {
 	} `json:"project"`
 }
 
+func (s *Server) listWebhookDeliveries(w http.ResponseWriter, r *http.Request) {
+	rows, err := s.db.QueryContext(r.Context(), `SELECT id,provider,delivery_id,event_type,accepted,rejection_reason,deployment_id,commit_sha,received_at FROM webhook_deliveries WHERE project_id=? ORDER BY id DESC LIMIT 200`, r.PathValue("id"))
+	if err != nil {
+		writeError(w, 500, "internal_error", "Could not list webhook deliveries.")
+		return
+	}
+	defer rows.Close()
+	items := make([]map[string]any, 0)
+	for rows.Next() {
+		var id int64
+		var provider, deliveryID, event, reason, sha, received string
+		var accepted bool
+		var deploymentID sql.NullInt64
+		if rows.Scan(&id, &provider, &deliveryID, &event, &accepted, &reason, &deploymentID, &sha, &received) != nil {
+			writeError(w, 500, "internal_error", "Could not list webhook deliveries.")
+			return
+		}
+		var deployment any
+		if deploymentID.Valid {
+			deployment = deploymentID.Int64
+		}
+		items = append(items, map[string]any{"id": id, "provider": provider, "deliveryId": deliveryID, "eventType": event, "accepted": accepted, "rejectionReason": reason, "deploymentId": deployment, "commitSha": sha, "receivedAt": received})
+	}
+	writeJSON(w, 200, items)
+}
+
 func (s *Server) webhook(w http.ResponseWriter, r *http.Request) {
 	projectID, provider := r.PathValue("projectID"), r.PathValue("provider")
 	var configuredProvider, repo, branch string
