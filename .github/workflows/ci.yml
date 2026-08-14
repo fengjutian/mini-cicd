@@ -16,6 +16,8 @@ jobs:
         working-directory: apps/web
       - run: npm run lint
         working-directory: apps/web
+      - run: npm test
+        working-directory: apps/web
       - run: go test -race ./...
       - run: go vet ./...
       - run: go build ./apps/server/cmd/minicicd
