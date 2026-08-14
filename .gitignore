@@ -1,1 +1,7 @@
 .qodo
+data/
+*.db
+*.db-shm
+*.db-wal
+apps/web/node_modules/
+apps/web/dist/
