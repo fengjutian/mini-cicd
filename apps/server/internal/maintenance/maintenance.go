@@ -3,6 +3,7 @@ package maintenance
 import (
 	"context"
 	"database/sql"
+	"fmt"
 	"log/slog"
 	"os"
 	"path/filepath"
@@ -155,40 +156,72 @@ func (m *Manager) automaticBackup(ctx context.Context, now time.Time) error {
 	return nil
 }
 func (m *Manager) cleanWorkspaces(ctx context.Context, before string) error {
-	rows, err := m.db.QueryContext(ctx, `SELECT id,project_id FROM deployments WHERE finished_at<? AND workspace_path IS NOT NULL AND status IN ('succeeded','failed','cancelled','timed_out')`, before)
-	if err != nil {
-		return err
-	}
-	items, err := pairs(rows)
+	items, err := m.claimDeploymentPaths(ctx, "workspace_path", before)
 	if err != nil {
 		return err
 	}
 	for _, x := range items {
-		if err = m.spaces.Remove(x.project, x.id); err != nil && !os.IsNotExist(err) {
+		if err := m.spaces.Remove(x.project, x.id); err != nil && !os.IsNotExist(err) {
 			m.logger.Warn("remove workspace", "deployment", x.id, "error", err)
-			continue
 		}
-		_, _ = m.db.ExecContext(ctx, `UPDATE deployments SET workspace_path=NULL WHERE id=?`, x.id)
 	}
 	return nil
 }
 func (m *Manager) cleanLogs(ctx context.Context, before string) error {
-	rows, err := m.db.QueryContext(ctx, `SELECT id,project_id FROM deployments WHERE finished_at<? AND log_path IS NOT NULL AND status IN ('succeeded','failed','cancelled','timed_out')`, before)
-	if err != nil {
-		return err
-	}
-	items, err := pairs(rows)
+	items, err := m.claimDeploymentPaths(ctx, "log_path", before)
 	if err != nil {
 		return err
 	}
 	for _, x := range items {
-		if err = m.logs.Remove(x.project, x.id); err != nil && !os.IsNotExist(err) {
+		if err := m.logs.Remove(x.project, x.id); err != nil && !os.IsNotExist(err) {
 			m.logger.Warn("remove log", "deployment", x.id, "error", err)
-			continue
 		}
-		_, _ = m.db.ExecContext(ctx, `UPDATE deployments SET log_path=NULL WHERE id=?`, x.id)
 	}
 	return nil
+}
+
+// claimDeploymentPaths atomically nulls out the given path column on every
+// terminal deployment finished before the cutoff, then returns the rows so
+// the caller can safely delete the on-disk files. Clearing the column
+// inside a transaction ensures the database never points to a file that
+// might be re-claimed by the next cleanup pass while a previous run is
+// still in the middle of removing it.
+func (m *Manager) claimDeploymentPaths(ctx context.Context, column, before string) ([]pair, error) {
+	if !safeColumnName(column) {
+		return nil, fmt.Errorf("refusing to clean unknown deployment path column: %s", column)
+	}
+	tx, err := m.db.BeginTx(ctx, nil)
+	if err != nil {
+		return nil, err
+	}
+	defer tx.Rollback()
+	query := fmt.Sprintf(`SELECT id,project_id FROM deployments WHERE finished_at<? AND %s IS NOT NULL AND status IN ('succeeded','failed','cancelled','timed_out')`, column)
+	rows, err := tx.QueryContext(ctx, query, before)
+	if err != nil {
+		return nil, err
+	}
+	items, err := pairs(rows)
+	if err != nil {
+		return nil, err
+	}
+	for _, x := range items {
+		if _, err := tx.ExecContext(ctx, fmt.Sprintf(`UPDATE deployments SET %s=NULL WHERE id=?`, column), x.id); err != nil {
+			return nil, err
+		}
+	}
+	if err := tx.Commit(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+func safeColumnName(name string) bool {
+	switch name {
+	case "workspace_path", "log_path":
+		return true
+	default:
+		return false
+	}
 }
 func (m *Manager) pruneDeployments(ctx context.Context) error {
 	rows, err := m.db.QueryContext(ctx, `SELECT id,project_id FROM (SELECT id,project_id,status,ROW_NUMBER() OVER(PARTITION BY project_id ORDER BY id DESC) AS rn FROM deployments) WHERE rn>? AND status IN ('succeeded','failed','cancelled','timed_out')`, m.deploymentRetention)
