@@ -12,28 +12,34 @@ import (
 type auditResponse struct {
 	http.ResponseWriter
 	status int
+	wrote  bool
 }
 
 func (w *auditResponse) WriteHeader(status int) {
-	if w.status == 0 {
+	if !w.wrote {
 		w.status = status
+		w.wrote = true
 	}
 	w.ResponseWriter.WriteHeader(status)
 }
 func (w *auditResponse) Write(p []byte) (int, error) {
-	if w.status == 0 {
-		w.status = 200
+	if !w.wrote {
+		// If a handler writes a body before calling WriteHeader, the net/http
+		// stack will set status 200 implicitly. Mirror that so the audit row
+		// matches the actual response status.
+		w.status = http.StatusOK
+		w.wrote = true
 	}
 	return w.ResponseWriter.Write(p)
 }
 func (w *auditResponse) Flush() {
-	if w.status == 0 {
-		w.status = 200
-	}
-	if f, ok := w.ResponseWriter.(http.Flusher); ok {
-		f.Flush()
-	}
+	// Do not synthesize a status here. SSE handlers call Flush before the
+	// first WriteHeader; the audit row will record whatever status the
+	// handler eventually commits (or, for a header-less 200, the implicit
+	// status from the net/http server when the request completes).
+	_ = http.NewResponseController(w.ResponseWriter).Flush()
 }
+func (w *auditResponse) Unwrap() http.ResponseWriter { return w.ResponseWriter }
 
 func (s *Server) audit(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -48,8 +54,10 @@ func (s *Server) audit(next http.Handler) http.Handler {
 		recorder := &auditResponse{ResponseWriter: w}
 		next.ServeHTTP(recorder, r)
 		status := recorder.status
-		if status == 0 {
-			status = 200
+		if !recorder.wrote {
+			// The handler never wrote headers or a body; treat that as a
+			// successful no-op (200) for the audit row.
+			status = http.StatusOK
 		}
 		if userID == "" && status >= 400 {
 			return

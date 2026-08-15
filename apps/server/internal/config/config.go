@@ -16,6 +16,7 @@ type Config struct {
 	DataDir             string
 	DatabasePath        string
 	SessionTTL          time.Duration
+	SessionIdleTTL      time.Duration
 	SecureCookies       bool
 	TrustProxy          bool
 	MasterKey           []byte
@@ -49,6 +50,13 @@ func Load() (Config, error) {
 	sessionTTL, err := time.ParseDuration(env("MINICICD_SESSION_TTL", "24h"))
 	if err != nil || sessionTTL <= 0 {
 		return Config{}, fmt.Errorf("MINICICD_SESSION_TTL must be a positive duration")
+	}
+	idleTTL, err := time.ParseDuration(env("MINICICD_SESSION_IDLE_TTL", "2h"))
+	if err != nil || idleTTL <= 0 {
+		return Config{}, fmt.Errorf("MINICICD_SESSION_IDLE_TTL must be a positive duration")
+	}
+	if idleTTL > sessionTTL {
+		return Config{}, fmt.Errorf("MINICICD_SESSION_IDLE_TTL must not exceed MINICICD_SESSION_TTL")
 	}
 	secure, err := strconv.ParseBool(env("MINICICD_SECURE_COOKIES", "false"))
 	if err != nil {
@@ -132,6 +140,7 @@ func Load() (Config, error) {
 		DataDir:             absDataDir,
 		DatabasePath:        filepath.Join(absDataDir, "mini-cicd.db"),
 		SessionTTL:          sessionTTL,
+		SessionIdleTTL:      idleTTL,
 		SecureCookies:       secure,
 		TrustProxy:          trustProxy,
 		MasterKey:           masterKey,

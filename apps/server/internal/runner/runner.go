@@ -39,9 +39,37 @@ type Manager struct {
 	wg       sync.WaitGroup
 	ctx      context.Context
 	cancel   context.CancelFunc
+
+	inflightMu sync.Mutex
+	inflight   map[int64]context.CancelFunc
 }
 
 func (m *Manager) UseRemote(endpoint string) *Manager { m.endpoint = endpoint; return m }
+
+// registerInflight stores the cancel function for a running deployment so
+// that an external Cancel request can short-circuit the 250ms poll loop.
+func (m *Manager) registerInflight(id int64, cancel context.CancelFunc) {
+	m.inflightMu.Lock()
+	m.inflight[id] = cancel
+	m.inflightMu.Unlock()
+}
+
+func (m *Manager) unregisterInflight(id int64) {
+	m.inflightMu.Lock()
+	delete(m.inflight, id)
+	m.inflightMu.Unlock()
+}
+
+// CancelByID triggers the in-process cancel of a running deployment. It is a
+// no-op if the deployment is not currently held by this Manager.
+func (m *Manager) CancelByID(id int64) {
+	m.inflightMu.Lock()
+	cancel := m.inflight[id]
+	m.inflightMu.Unlock()
+	if cancel != nil {
+		cancel()
+	}
+}
 
 type step struct {
 	id           int64
@@ -51,7 +79,7 @@ type step struct {
 
 func New(db *sql.DB, deps *deployment.Service, git *gitops.Git, spaces *workspace.Manager, logs *logstore.Store, box *secret.Box, shell string, parallel int, grace time.Duration, logger *slog.Logger) *Manager {
 	ctx, cancel := context.WithCancel(context.Background())
-	return &Manager{db: db, deps: deps, git: git, spaces: spaces, logs: logs, box: box, shell: shell, parallel: parallel, grace: grace, logger: logger, wake: make(chan struct{}, 1), ctx: ctx, cancel: cancel}
+	return &Manager{db: db, deps: deps, git: git, spaces: spaces, logs: logs, box: box, shell: shell, parallel: parallel, grace: grace, logger: logger, wake: make(chan struct{}, 1), ctx: ctx, cancel: cancel, inflight: map[int64]context.CancelFunc{}}
 }
 func (m *Manager) Start() {
 	_ = m.recover()
@@ -132,6 +160,8 @@ func (m *Manager) run(d deployment.Deployment) error {
 	}
 	ctx, cancel := context.WithTimeout(m.ctx, time.Duration(deploySeconds)*time.Second)
 	defer cancel()
+	m.registerInflight(d.ID, cancel)
+	defer m.unregisterInflight(d.ID)
 	watchDone := make(chan struct{})
 	defer close(watchDone)
 	go func() {

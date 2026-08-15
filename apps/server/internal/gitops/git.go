@@ -21,7 +21,14 @@ import (
 	"github.com/charlesfeng/mini-cicd/apps/server/internal/secret"
 )
 
-var shaPattern = regexp.MustCompile(`^[0-9a-f]{40}$`)
+var (
+	shaPattern = regexp.MustCompile(`^[0-9a-f]{40}$`)
+	// gitCredentialURL scrubs user:password@ segments in remote URLs.
+	// Git itself sometimes echoes the configured remote (with the embedded
+	// credentials) when authentication fails, and we never want that text
+	// to leak back to API clients.
+	gitCredentialURL = regexp.MustCompile(`([a-z][a-z0-9+\-.]*://)[^/\s@]+:[^/\s@]+@`)
+)
 
 type Git struct {
 	dataDir string
@@ -277,7 +284,18 @@ func run(ctx context.Context, dir string, env []string, name string, args ...str
 		err = ctx.Err()
 	}
 	if err != nil {
-		return "", fmt.Errorf("git command failed: %s: %w", strings.TrimSpace(out.String()), err)
+		return "", fmt.Errorf("git command failed: %s: %w", sanitizeGitOutput(out.String()), err)
 	}
 	return out.String(), nil
+}
+
+// sanitizeGitOutput trims long Git stderr/stdout and strips any embedded
+// `user:password@` segments so credentials never reach the API layer.
+func sanitizeGitOutput(value string) string {
+	cleaned := strings.TrimSpace(gitCredentialURL.ReplaceAllString(value, "$1***@"))
+	const maxLen = 200
+	if len(cleaned) > maxLen {
+		cleaned = cleaned[:maxLen] + "..."
+	}
+	return cleaned
 }

@@ -28,12 +28,66 @@ func Open(path string) (*sql.DB, error) {
 }
 
 func Migrate(db *sql.DB) error {
-	const schema = `
+	if err := bootstrapMigrationsTable(db); err != nil {
+		return err
+	}
+	version, err := currentSchemaVersion(db)
+	if err != nil {
+		return err
+	}
+	if version < 1 {
+		if err := applyV1(db); err != nil {
+			return err
+		}
+	}
+	if version < 2 {
+		if err := applyV2(db); err != nil {
+			return err
+		}
+	}
+	if version < 3 {
+		if err := applyV3(db); err != nil {
+			return err
+		}
+	}
+	if version < 4 {
+		if err := applyV4(db); err != nil {
+			return err
+		}
+	}
+	if version < 5 {
+		if err := applyV5(db); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func bootstrapMigrationsTable(db *sql.DB) error {
+	_, err := db.Exec(`
 CREATE TABLE IF NOT EXISTS schema_migrations (
     version INTEGER PRIMARY KEY,
     applied_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
-);
+);`)
+	return err
+}
 
+func currentSchemaVersion(db *sql.DB) (int, error) {
+	var version int
+	row := db.QueryRow(`SELECT COALESCE(MAX(version), 0) FROM schema_migrations`)
+	if err := row.Scan(&version); err != nil {
+		return 0, fmt.Errorf("read schema_migrations: %w", err)
+	}
+	return version, nil
+}
+
+func recordMigration(db *sql.DB, version int) error {
+	_, err := db.Exec(`INSERT OR IGNORE INTO schema_migrations(version) VALUES (?)`, version)
+	return err
+}
+
+func applyV1(db *sql.DB) error {
+	const schema = `
 CREATE TABLE IF NOT EXISTS users (
     id TEXT PRIMARY KEY,
     email TEXT NOT NULL COLLATE NOCASE UNIQUE,
@@ -52,14 +106,15 @@ CREATE TABLE IF NOT EXISTS sessions (
 );
 CREATE INDEX IF NOT EXISTS idx_sessions_user_id ON sessions(user_id);
 CREATE INDEX IF NOT EXISTS idx_sessions_expires_at ON sessions(expires_at);
-
-INSERT OR IGNORE INTO schema_migrations(version) VALUES (1);
 `
-	_, err := db.Exec(schema)
-	if err != nil {
+	if _, err := db.Exec(schema); err != nil {
 		return err
 	}
-	const v2 = `
+	return recordMigration(db, 1)
+}
+
+func applyV2(db *sql.DB) error {
+	const schema = `
 CREATE TABLE IF NOT EXISTS projects (
     id TEXT PRIMARY KEY,
     name TEXT NOT NULL,
@@ -98,7 +153,7 @@ CREATE UNIQUE INDEX IF NOT EXISTS idx_project_variables_active ON project_variab
 CREATE TABLE IF NOT EXISTS deployments (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     project_id TEXT NOT NULL REFERENCES projects(id),
-    status TEXT NOT NULL CHECK(status IN ('resolving','queued','preparing','running','cancelling','cancelled','succeeded','failed','timed_out')),
+    status TEXT NOT NULL CHECK(status IN ('queued','preparing','running','cancelling','cancelled','succeeded','failed','timed_out')),
     trigger_type TEXT NOT NULL CHECK(trigger_type IN ('manual','webhook','redeploy')),
     branch TEXT NOT NULL,
     commit_sha TEXT,
@@ -147,11 +202,8 @@ CREATE TABLE IF NOT EXISTS project_locks (
     deployment_id INTEGER NOT NULL UNIQUE REFERENCES deployments(id) ON DELETE CASCADE,
     acquired_at TEXT NOT NULL
 );
-
-INSERT OR IGNORE INTO schema_migrations(version) VALUES (2);
 `
-	_, err = db.Exec(v2)
-	if err != nil {
+	if _, err := db.Exec(schema); err != nil {
 		return err
 	}
 	columns := []struct{ table, name, definition string }{
@@ -174,11 +226,15 @@ INSERT OR IGNORE INTO schema_migrations(version) VALUES (2);
 		{"deployments", "health_expected_status", "TEXT NOT NULL DEFAULT '200-299'"},
 	}
 	for _, column := range columns {
-		if err = ensureColumn(db, column.table, column.name, column.definition); err != nil {
+		if err := ensureColumn(db, column.table, column.name, column.definition); err != nil {
 			return err
 		}
 	}
-	const v3 = `
+	return recordMigration(db, 2)
+}
+
+func applyV3(db *sql.DB) error {
+	const schema = `
 CREATE TABLE IF NOT EXISTS webhook_deliveries (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
@@ -193,27 +249,31 @@ CREATE TABLE IF NOT EXISTS webhook_deliveries (
     UNIQUE(provider,delivery_id)
 );
 CREATE INDEX IF NOT EXISTS idx_webhook_deliveries_project ON webhook_deliveries(project_id,received_at DESC);
-INSERT OR IGNORE INTO schema_migrations(version) VALUES (3);`
-	_, err = db.Exec(v3)
-	if err != nil {
+`
+	if _, err := db.Exec(schema); err != nil {
 		return err
 	}
-	if err = ensureColumn(db, "webhook_deliveries", "commit_sha", "TEXT NOT NULL DEFAULT ''"); err != nil {
+	if err := ensureColumn(db, "webhook_deliveries", "commit_sha", "TEXT NOT NULL DEFAULT ''"); err != nil {
 		return err
 	}
-	for _, column := range []struct{ name, definition string }{
+	return recordMigration(db, 3)
+}
+
+func applyV4(db *sql.DB) error {
+	columns := []struct{ name, definition string }{
 		{"ip_address", "TEXT NOT NULL DEFAULT ''"},
 		{"user_agent", "TEXT NOT NULL DEFAULT ''"},
-	} {
-		if err = ensureColumn(db, "sessions", column.name, column.definition); err != nil {
+	}
+	for _, column := range columns {
+		if err := ensureColumn(db, "sessions", column.name, column.definition); err != nil {
 			return err
 		}
 	}
-	_, err = db.Exec(`INSERT OR IGNORE INTO schema_migrations(version) VALUES (4)`)
-	if err != nil {
-		return err
-	}
-	const v5 = `
+	return recordMigration(db, 4)
+}
+
+func applyV5(db *sql.DB) error {
+	const schema = `
 CREATE TABLE IF NOT EXISTS audit_events (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     user_id TEXT,
@@ -226,12 +286,21 @@ CREATE TABLE IF NOT EXISTS audit_events (
     created_at TEXT NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_audit_events_created ON audit_events(created_at DESC,id DESC);
-INSERT OR IGNORE INTO schema_migrations(version) VALUES (5);`
-	_, err = db.Exec(v5)
-	return err
+`
+	if _, err := db.Exec(schema); err != nil {
+		return err
+	}
+	return recordMigration(db, 5)
 }
 
+// ensureColumn runs an idempotent ADD COLUMN only for the table/column
+// pairs the migration system is allowed to manage. Both identifiers must
+// match `safeIdent`; this keeps the PRAGMA and ALTER statements from being
+// driven by unchecked input.
 func ensureColumn(db *sql.DB, table, name, definition string) error {
+	if !safeIdent(table) || !safeIdent(name) {
+		return fmt.Errorf("refusing to ensure column with unsafe identifier: %s.%s", table, name)
+	}
 	rows, err := db.Query(`PRAGMA table_info(` + table + `)`)
 	if err != nil {
 		return err
@@ -258,4 +327,24 @@ func ensureColumn(db *sql.DB, table, name, definition string) error {
 	}
 	_, err = db.Exec(`ALTER TABLE ` + table + ` ADD COLUMN ` + name + ` ` + definition)
 	return err
+}
+
+// safeIdent returns true when the value can be used as a bare SQL identifier
+// in the migration helpers. The rules are intentionally strict because the
+// only callers ship a fixed set of names from this package.
+func safeIdent(v string) bool {
+	if v == "" {
+		return false
+	}
+	for i, r := range v {
+		switch {
+		case r >= 'a' && r <= 'z':
+		case r >= 'A' && r <= 'Z':
+		case r == '_':
+		case i > 0 && r >= '0' && r <= '9':
+		default:
+			return false
+		}
+	}
+	return true
 }

@@ -237,7 +237,7 @@ func (s *Server) setup(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err := tx.Commit(); err != nil {
-		writeError(w, http.StatusConflict, "already_initialized", "The system has already been initialized.")
+		writeError(w, http.StatusInternalServerError, "internal_error", "Could not initialize the system.")
 		return
 	}
 	s.setSessionCookie(w, rawToken, now.Add(s.cfg.SessionTTL))
@@ -305,22 +305,31 @@ func (s *Server) requireAuth(next http.HandlerFunc) http.HandlerFunc {
 			return
 		}
 		var u user
-		var expiresAt string
+		var expiresAt, lastSeenAt string
 		err = s.db.QueryRowContext(r.Context(), `
-SELECT u.id,u.email,u.username,u.role,u.created_at,s.expires_at
+SELECT u.id,u.email,u.username,u.role,u.created_at,s.expires_at,s.last_seen_at
 FROM sessions s JOIN users u ON u.id=s.user_id
-WHERE s.id_hash=?`, auth.HashSessionToken(cookie.Value)).Scan(&u.ID, &u.Email, &u.Username, &u.Role, &u.CreatedAt, &expiresAt)
+WHERE s.id_hash=?`, auth.HashSessionToken(cookie.Value)).Scan(&u.ID, &u.Email, &u.Username, &u.Role, &u.CreatedAt, &expiresAt, &lastSeenAt)
 		if err != nil {
 			writeError(w, http.StatusUnauthorized, "unauthorized", "The session is invalid.")
 			return
 		}
+		now := time.Now().UTC()
 		expires, err := time.Parse(time.RFC3339Nano, expiresAt)
-		if err != nil || !expires.After(time.Now().UTC()) {
+		if err != nil || !expires.After(now) {
 			_, _ = s.db.ExecContext(r.Context(), `DELETE FROM sessions WHERE id_hash=?`, auth.HashSessionToken(cookie.Value))
 			writeError(w, http.StatusUnauthorized, "session_expired", "The session has expired.")
 			return
 		}
-		_, _ = s.db.ExecContext(r.Context(), `UPDATE sessions SET last_seen_at=? WHERE id_hash=?`, time.Now().UTC().Format(time.RFC3339Nano), auth.HashSessionToken(cookie.Value))
+		if s.cfg.SessionIdleTTL > 0 {
+			lastSeen, err := time.Parse(time.RFC3339Nano, lastSeenAt)
+			if err != nil || now.Sub(lastSeen) > s.cfg.SessionIdleTTL {
+				_, _ = s.db.ExecContext(r.Context(), `DELETE FROM sessions WHERE id_hash=?`, auth.HashSessionToken(cookie.Value))
+				writeError(w, http.StatusUnauthorized, "session_idle_expired", "The session was idle for too long.")
+				return
+			}
+		}
+		_, _ = s.db.ExecContext(r.Context(), `UPDATE sessions SET last_seen_at=? WHERE id_hash=?`, now.Format(time.RFC3339Nano), auth.HashSessionToken(cookie.Value))
 		next(w, r.WithContext(context.WithValue(r.Context(), userKey, u)))
 	}
 }

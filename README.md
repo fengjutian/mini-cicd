@@ -44,7 +44,8 @@ go run ./apps/server/cmd/minicicd
 | --- | --- | --- |
 | `MINICICD_LISTEN_ADDR` | `127.0.0.1:8080` | HTTP 监听地址 |
 | `MINICICD_DATA_DIR` | `./data` | SQLite 与后续工作区的数据目录 |
-| `MINICICD_SESSION_TTL` | `24h` | Session 有效期 |
+| `MINICICD_SESSION_TTL` | `24h` | Session 绝对有效期 |
+| `MINICICD_SESSION_IDLE_TTL` | `2h` | Session 空闲过期时间,必须 ≤ `MINICICD_SESSION_TTL` |
 | `MINICICD_SECURE_COOKIES` | `false` | HTTPS 环境必须设置为 `true` |
 | `MINICICD_TRUST_PROXY` | `false` | 是否信任第一段 `X-Forwarded-For` |
 | `MINICICD_MASTER_KEY` | 无 | 32 字节主密钥的无填充 Base64；使用 Secret 时必填 |

@@ -77,6 +77,9 @@ func (s *Server) cancelDeployment(w http.ResponseWriter, r *http.Request) {
 		s.deploymentError(w, err)
 		return
 	}
+	// Short-circuit the runner's 250ms cancellation poll so the in-flight
+	// step's context is cancelled as soon as the API call returns.
+	s.runner.CancelByID(id)
 	s.runner.Wake()
 	d, err := s.deps.Get(r.Context(), id)
 	if err != nil {

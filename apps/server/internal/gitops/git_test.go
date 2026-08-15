@@ -81,3 +81,17 @@ func TestSSHRequiresKnownHosts(t *testing.T) {
 		t.Fatal("SSH without known_hosts was accepted")
 	}
 }
+
+func TestSanitizeGitOutputStripsCredentialsAndTruncates(t *testing.T) {
+	in := "fatal: Authentication failed for 'https://alice:s3cret@example.com/repo.git/'\n" + strings.Repeat("x", 400)
+	out := sanitizeGitOutput(in)
+	if strings.Contains(out, "s3cret") {
+		t.Fatalf("credential leaked through sanitized output: %s", out)
+	}
+	if !strings.Contains(out, "***@") {
+		t.Fatalf("expected credential mask in: %s", out)
+	}
+	if !strings.HasSuffix(out, "...") {
+		t.Fatalf("expected truncation suffix, got %q", out)
+	}
+}

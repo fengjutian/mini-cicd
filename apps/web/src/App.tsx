@@ -5,7 +5,7 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { api, json } from './api'
 import type { Deployment, DeploymentStep, Project, User, Variable } from './types'
 
-const statusText: Record<string, string> = { resolving:'解析中',queued:'排队中',preparing:'准备中',running:'运行中',cancelling:'取消中',cancelled:'已取消',succeeded:'成功',failed:'失败',timed_out:'超时',pending:'等待',skipped:'跳过' }
+const statusText: Record<string, string> = { queued:'排队中',preparing:'准备中',running:'运行中',cancelling:'取消中',cancelled:'已取消',succeeded:'成功',failed:'失败',timed_out:'超时',pending:'等待',skipped:'跳过' }
 const fmt = (value?: string) => value ? new Intl.DateTimeFormat('zh-CN',{dateStyle:'medium',timeStyle:'short'}).format(new Date(value)) : '—'
 const bytes = (value=0) => value < 1024 ? `${value} B` : value < 1048576 ? `${(value/1024).toFixed(1)} KB` : value < 1073741824 ? `${(value/1048576).toFixed(1)} MB` : `${(value/1073741824).toFixed(1)} GB`
 
