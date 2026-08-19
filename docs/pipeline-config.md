@@ -121,3 +121,28 @@ settings, and timeouts also come from the source deployment snapshot.
 Retention is between 1 and 50 versions per project. Old versions are removed
 after a new snapshot is saved; an artifact currently referenced by an active
 rollback is not removed.
+
+## Environments and production protection
+
+Environment policy is versioned with the repository configuration:
+
+```yaml
+environments:
+  staging:
+    allowedBranches: [main, develop]
+  production:
+    approvalRequired: true
+    allowedBranches: [main]
+    frozen: false
+    deploymentWindow:
+      days: [mon, tue, wed, thu, fri]
+      start: "09:00"
+      end: "18:00"
+      timezone: "+08:00"
+```
+
+Create a manual deployment with `?environment=staging` or `production`.
+Protected deployments remain queued but cannot be claimed by a runner until an
+Owner approves them. Frozen environments and deployments outside their window
+are rejected before queueing. Environment variables and Secrets use the
+environment-specific API and are snapshotted independently.

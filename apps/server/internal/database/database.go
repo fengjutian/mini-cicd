@@ -80,7 +80,32 @@ func Migrate(db *sql.DB) error {
 			return err
 		}
 	}
+	if version < 10 {
+		if err := applyV10(db); err != nil {
+			return err
+		}
+	}
 	return nil
+}
+
+func applyV10(db *sql.DB) error {
+	columns := []struct{ table, name, definition string }{
+		{"deployments", "environment", "TEXT NOT NULL DEFAULT 'production'"},
+		{"deployments", "environment_config_json", "TEXT NOT NULL DEFAULT '{}'"},
+		{"deployments", "approval_status", "TEXT NOT NULL DEFAULT 'approved'"},
+		{"deployments", "approved_at", "TEXT"},
+		{"deployments", "approved_by", "TEXT"},
+		{"project_variables", "environment", "TEXT NOT NULL DEFAULT 'production'"},
+	}
+	for _, c := range columns {
+		if err := ensureColumn(db, c.table, c.name, c.definition); err != nil {
+			return err
+		}
+	}
+	if _, err := db.Exec(`DROP INDEX IF EXISTS idx_project_variables_active; CREATE UNIQUE INDEX idx_project_variables_active ON project_variables(project_id,environment,name) WHERE replaced_at IS NULL; CREATE INDEX IF NOT EXISTS idx_deployments_approval ON deployments(approval_status,status,queued_at,id);`); err != nil {
+		return err
+	}
+	return recordMigration(db, 10)
 }
 
 func applyV9(db *sql.DB) error {

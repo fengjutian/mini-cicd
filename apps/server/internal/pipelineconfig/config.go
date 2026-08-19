@@ -24,9 +24,23 @@ type Config struct {
 		Step       string `yaml:"step" json:"step,omitempty"`
 		Deployment string `yaml:"deployment" json:"deployment,omitempty"`
 	} `yaml:"timeouts" json:"timeouts"`
-	Application   Application    `yaml:"application" json:"application"`
-	Notifications []Notification `yaml:"notifications" json:"notifications"`
-	Artifacts     ArtifactConfig `yaml:"artifacts" json:"artifacts"`
+	Application   Application            `yaml:"application" json:"application"`
+	Notifications []Notification         `yaml:"notifications" json:"notifications"`
+	Artifacts     ArtifactConfig         `yaml:"artifacts" json:"artifacts"`
+	Environments  map[string]Environment `yaml:"environments" json:"environments"`
+}
+
+type Environment struct {
+	ApprovalRequired bool              `yaml:"approvalRequired" json:"approvalRequired"`
+	AllowedBranches  []string          `yaml:"allowedBranches" json:"allowedBranches"`
+	Frozen           bool              `yaml:"frozen" json:"frozen"`
+	Window           *DeploymentWindow `yaml:"deploymentWindow" json:"deploymentWindow,omitempty"`
+}
+type DeploymentWindow struct {
+	Days     []string `yaml:"days" json:"days"`
+	Start    string   `yaml:"start" json:"start"`
+	End      string   `yaml:"end" json:"end"`
+	Timezone string   `yaml:"timezone" json:"timezone"`
 }
 
 type ArtifactConfig struct {
@@ -65,6 +79,7 @@ type Resolved struct {
 	Application                    Application
 	Notifications                  []Notification
 	Artifacts                      ArtifactConfig
+	Environments                   map[string]Environment
 }
 
 var safeName = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9_.@-]*$`)
@@ -85,6 +100,7 @@ func Parse(raw []byte, defaults Resolved) (Resolved, error) {
 	out.Application = cfg.Application
 	out.Notifications = cfg.Notifications
 	out.Artifacts = cfg.Artifacts
+	out.Environments = cfg.Environments
 	if cfg.Timeouts.Step != "" {
 		d, err := time.ParseDuration(cfg.Timeouts.Step)
 		if err != nil || d <= 0 {
@@ -127,7 +143,49 @@ func Parse(raw []byte, defaults Resolved) (Resolved, error) {
 	if err := validateArtifacts(&out.Artifacts); err != nil {
 		return Resolved{}, err
 	}
+	if err := validateEnvironments(out.Environments); err != nil {
+		return Resolved{}, err
+	}
 	return out, nil
+}
+
+func validateEnvironments(items map[string]Environment) error {
+	envName := regexp.MustCompile(`^[a-z][a-z0-9-]{0,31}$`)
+	days := map[string]bool{"sun": true, "mon": true, "tue": true, "wed": true, "thu": true, "fri": true, "sat": true}
+	for name, cfg := range items {
+		if !envName.MatchString(name) {
+			return errors.New("environment names must use lowercase letters, numbers, and hyphens")
+		}
+		for _, branch := range cfg.AllowedBranches {
+			if strings.TrimSpace(branch) == "" || strings.HasPrefix(branch, "-") {
+				return fmt.Errorf("environment %s has an invalid allowed branch", name)
+			}
+		}
+		if cfg.Window != nil {
+			w := cfg.Window
+			if len(w.Days) == 0 {
+				return fmt.Errorf("environment %s deploymentWindow requires days", name)
+			}
+			seen := map[string]bool{}
+			for _, day := range w.Days {
+				day = strings.ToLower(day)
+				if !days[day] || seen[day] {
+					return fmt.Errorf("environment %s deploymentWindow has invalid days", name)
+				}
+				seen[day] = true
+			}
+			if _, err := time.Parse("15:04", w.Start); err != nil {
+				return fmt.Errorf("environment %s deploymentWindow start must use HH:MM", name)
+			}
+			if _, err := time.Parse("15:04", w.End); err != nil || w.Start == w.End {
+				return fmt.Errorf("environment %s deploymentWindow end must use a different HH:MM", name)
+			}
+			if _, err := time.Parse("-07:00", w.Timezone); err != nil {
+				return fmt.Errorf("environment %s deploymentWindow timezone must be a UTC offset", name)
+			}
+		}
+	}
+	return nil
 }
 
 func validateArtifacts(cfg *ArtifactConfig) error {

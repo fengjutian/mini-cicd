@@ -234,6 +234,9 @@ func (s *Service) Archive(ctx context.Context, id string) error {
 }
 
 func (s *Service) PutVariable(ctx context.Context, projectID string, in VariableInput) (Variable, error) {
+	return s.PutEnvironmentVariable(ctx, projectID, "production", in)
+}
+func (s *Service) PutEnvironmentVariable(ctx context.Context, projectID, environment string, in VariableInput) (Variable, error) {
 	if !namePattern.MatchString(in.Name) || len(in.Name) > 128 {
 		return Variable{}, errors.New("invalid environment variable name")
 	}
@@ -257,10 +260,10 @@ func (s *Service) PutVariable(ctx context.Context, projectID string, in Variable
 	if err := tx.QueryRowContext(ctx, `SELECT COALESCE(MAX(version),0)+1 FROM project_variables WHERE project_id=? AND name=?`, projectID, in.Name).Scan(&version); err != nil {
 		return Variable{}, err
 	}
-	if _, err = tx.ExecContext(ctx, `UPDATE project_variables SET replaced_at=? WHERE project_id=? AND name=? AND replaced_at IS NULL`, now, projectID, in.Name); err != nil {
+	if _, err = tx.ExecContext(ctx, `UPDATE project_variables SET replaced_at=? WHERE project_id=? AND environment=? AND name=? AND replaced_at IS NULL`, now, projectID, environment, in.Name); err != nil {
 		return Variable{}, err
 	}
-	if _, err = tx.ExecContext(ctx, `INSERT INTO project_variables(project_id,name,version,is_secret,plain_value,cipher_value,created_at) VALUES(?,?,?,?,?,?,?)`, projectID, in.Name, version, in.IsSecret, plain, cipherValue, now); err != nil {
+	if _, err = tx.ExecContext(ctx, `INSERT INTO project_variables(project_id,environment,name,version,is_secret,plain_value,cipher_value,created_at) VALUES(?,?,?,?,?,?,?,?)`, projectID, environment, in.Name, version, in.IsSecret, plain, cipherValue, now); err != nil {
 		return Variable{}, err
 	}
 	if err = tx.Commit(); err != nil {
@@ -270,7 +273,10 @@ func (s *Service) PutVariable(ctx context.Context, projectID string, in Variable
 }
 
 func (s *Service) ListVariables(ctx context.Context, projectID string) ([]Variable, error) {
-	rows, err := s.db.QueryContext(ctx, `SELECT name,is_secret,COALESCE(plain_value,''),version,created_at FROM project_variables WHERE project_id=? AND replaced_at IS NULL ORDER BY name`, projectID)
+	return s.ListEnvironmentVariables(ctx, projectID, "production")
+}
+func (s *Service) ListEnvironmentVariables(ctx context.Context, projectID, environment string) ([]Variable, error) {
+	rows, err := s.db.QueryContext(ctx, `SELECT name,is_secret,COALESCE(plain_value,''),version,created_at FROM project_variables WHERE project_id=? AND environment=? AND replaced_at IS NULL ORDER BY name`, projectID, environment)
 	if err != nil {
 		return nil, err
 	}
@@ -290,7 +296,10 @@ func (s *Service) ListVariables(ctx context.Context, projectID string) ([]Variab
 }
 
 func (s *Service) DeleteVariable(ctx context.Context, projectID, name string) error {
-	res, err := s.db.ExecContext(ctx, `UPDATE project_variables SET replaced_at=? WHERE project_id=? AND name=? AND replaced_at IS NULL`, time.Now().UTC().Format(time.RFC3339Nano), projectID, name)
+	return s.DeleteEnvironmentVariable(ctx, projectID, "production", name)
+}
+func (s *Service) DeleteEnvironmentVariable(ctx context.Context, projectID, environment, name string) error {
+	res, err := s.db.ExecContext(ctx, `UPDATE project_variables SET replaced_at=? WHERE project_id=? AND environment=? AND name=? AND replaced_at IS NULL`, time.Now().UTC().Format(time.RFC3339Nano), projectID, environment, name)
 	if err != nil {
 		return err
 	}

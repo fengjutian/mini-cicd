@@ -32,6 +32,7 @@ type projectSnapshot struct {
 	applicationJSON                                                string
 	notificationJSON                                               string
 	artifactJSON                                                   string
+	environment, environmentJSON, approvalStatus                   string
 }
 type Step struct {
 	ID               int64   `json:"id"`
@@ -63,6 +64,10 @@ type Deployment struct {
 	ConfigSnapshot             string  `json:"configSnapshot,omitempty"`
 	HasArtifacts               bool    `json:"hasArtifacts"`
 	ArtifactSourceDeploymentID *int64  `json:"artifactSourceDeploymentId,omitempty"`
+	Environment                string  `json:"environment"`
+	ApprovalStatus             string  `json:"approvalStatus"`
+	ApprovedAt                 *string `json:"approvedAt,omitempty"`
+	ApprovedBy                 string  `json:"approvedBy,omitempty"`
 	QueuedAt                   *string `json:"queuedAt"`
 	StartedAt                  *string `json:"startedAt"`
 	FinishedAt                 *string `json:"finishedAt"`
@@ -78,6 +83,9 @@ type Claimed struct {
 func New(db *sql.DB, resolver Resolver) *Service { return &Service{db: db, resolver: resolver} }
 
 func (s *Service) Create(ctx context.Context, projectID, trigger string) (Deployment, error) {
+	return s.CreateForEnvironment(ctx, projectID, trigger, "production")
+}
+func (s *Service) CreateForEnvironment(ctx context.Context, projectID, trigger, environment string) (Deployment, error) {
 	if trigger != "manual" && trigger != "webhook" && trigger != "redeploy" {
 		return Deployment{}, errors.New("invalid trigger type")
 	}
@@ -92,7 +100,7 @@ func (s *Service) Create(ctx context.Context, projectID, trigger string) (Deploy
 	if len(commit.SHA) != 40 {
 		return Deployment{}, errors.New("resolver returned an invalid commit SHA")
 	}
-	return s.createResolved(ctx, projectID, trigger, snapshot, commit)
+	return s.createResolved(ctx, projectID, trigger, environment, snapshot, commit)
 }
 
 func (s *Service) CreateAtCommit(ctx context.Context, projectID, trigger, sha string) (Deployment, error) {
@@ -115,7 +123,7 @@ func (s *Service) CreateAtCommit(ctx context.Context, projectID, trigger, sha st
 	if err != nil {
 		return Deployment{}, fmt.Errorf("resolve commit: %w", err)
 	}
-	return s.createResolved(ctx, projectID, trigger, snapshot, commit)
+	return s.createResolved(ctx, projectID, trigger, "production", snapshot, commit)
 }
 
 // Rollback queues only the deploy phase using a successful deployment's
@@ -143,6 +151,9 @@ func (s *Service) Rollback(ctx context.Context, sourceID int64) (Deployment, err
 	if err != nil {
 		return Deployment{}, err
 	}
+	if _, err = tx.ExecContext(ctx, `UPDATE deployments SET environment=(SELECT environment FROM deployments WHERE id=?),environment_config_json=(SELECT environment_config_json FROM deployments WHERE id=?),approval_status='approved' WHERE id=?`, sourceID, sourceID, id); err != nil {
+		return Deployment{}, err
+	}
 	if _, err = tx.ExecContext(ctx, `INSERT INTO deployment_variables(deployment_id,name,is_secret,plain_value,cipher_value,source_version) SELECT ?,name,is_secret,plain_value,cipher_value,source_version FROM deployment_variables WHERE deployment_id=?`, id, sourceID); err != nil {
 		return Deployment{}, err
 	}
@@ -161,7 +172,7 @@ func (s *Service) projectSnapshot(ctx context.Context, projectID string) (projec
 	return p, err
 }
 
-func (s *Service) createResolved(ctx context.Context, projectID, trigger string, snapshot projectSnapshot, commit Commit) (Deployment, error) {
+func (s *Service) createResolved(ctx context.Context, projectID, trigger, environment string, snapshot projectSnapshot, commit Commit) (Deployment, error) {
 	if len(commit.SHA) != 40 {
 		return Deployment{}, errors.New("resolver returned an invalid commit SHA")
 	}
@@ -170,6 +181,7 @@ func (s *Service) createResolved(ctx context.Context, projectID, trigger string,
 		return Deployment{}, errors.New("invalid stored pipeline")
 	}
 	snapshot.configSource = "project"
+	snapshot.environment, snapshot.environmentJSON, snapshot.approvalStatus = environment, "{}", "approved"
 	if reader, ok := s.resolver.(RepositoryFileReader); ok {
 		raw, readErr := reader.ReadFile(ctx, projectID, snapshot.repo, commit.SHA, pipelineconfig.Filename)
 		if readErr == nil {
@@ -184,6 +196,24 @@ func (s *Service) createResolved(ctx context.Context, projectID, trigger string,
 			snapshot.notificationJSON = string(notificationRaw)
 			artifactRaw, _ := json.Marshal(resolved.Artifacts)
 			snapshot.artifactJSON = string(artifactRaw)
+			env, exists := resolved.Environments[environment]
+			if !exists && environment != "production" {
+				return Deployment{}, fmt.Errorf("environment %q is not defined", environment)
+			}
+			if env.Frozen {
+				return Deployment{}, fmt.Errorf("environment %q is frozen", environment)
+			}
+			if len(env.AllowedBranches) > 0 && !stringIn(env.AllowedBranches, snapshot.branch) {
+				return Deployment{}, fmt.Errorf("branch %q is not allowed for environment %q", snapshot.branch, environment)
+			}
+			if env.Window != nil && !insideWindow(time.Now().UTC(), *env.Window) {
+				return Deployment{}, fmt.Errorf("environment %q is outside its deployment window", environment)
+			}
+			envRaw, _ := json.Marshal(env)
+			snapshot.environmentJSON = string(envRaw)
+			if env.ApprovalRequired {
+				snapshot.approvalStatus = "pending"
+			}
 			snapshot.stepTimeout, snapshot.deploymentTimeout = int(resolved.StepTimeout/time.Second), int(resolved.DeploymentTimeout/time.Second)
 			snapshot.configSource, snapshot.configSnapshot = "repository", string(raw)
 		} else if !errors.Is(readErr, os.ErrNotExist) {
@@ -213,7 +243,10 @@ func (s *Service) createResolved(ctx context.Context, projectID, trigger string,
 	if err != nil {
 		return Deployment{}, err
 	}
-	if _, err = tx.ExecContext(ctx, `INSERT INTO deployment_variables(deployment_id,name,is_secret,plain_value,cipher_value,source_version) SELECT ?,name,is_secret,plain_value,cipher_value,version FROM project_variables WHERE project_id=? AND replaced_at IS NULL`, id, projectID); err != nil {
+	if _, err = tx.ExecContext(ctx, `UPDATE deployments SET environment=?,environment_config_json=?,approval_status=? WHERE id=?`, snapshot.environment, snapshot.environmentJSON, snapshot.approvalStatus, id); err != nil {
+		return Deployment{}, err
+	}
+	if _, err = tx.ExecContext(ctx, `INSERT INTO deployment_variables(deployment_id,name,is_secret,plain_value,cipher_value,source_version) SELECT ?,name,is_secret,plain_value,cipher_value,version FROM project_variables WHERE project_id=? AND environment=? AND replaced_at IS NULL`, id, projectID, snapshot.environment); err != nil {
 		return Deployment{}, err
 	}
 	seq := 0
@@ -251,9 +284,35 @@ func (s *Service) Steps(ctx context.Context, id int64) ([]Step, error) {
 	return out, rows.Err()
 }
 
+func stringIn(items []string, value string) bool {
+	for _, item := range items {
+		if item == value {
+			return true
+		}
+	}
+	return false
+}
+func insideWindow(now time.Time, w pipelineconfig.DeploymentWindow) bool {
+	parsed, err := time.Parse("-07:00", w.Timezone)
+	if err != nil {
+		return false
+	}
+	_, offset := parsed.Zone()
+	local := now.In(time.FixedZone("deployment", offset))
+	days := []string{"sun", "mon", "tue", "wed", "thu", "fri", "sat"}
+	if !stringIn(w.Days, days[int(local.Weekday())]) {
+		return false
+	}
+	clock := local.Format("15:04")
+	if w.Start < w.End {
+		return clock >= w.Start && clock < w.End
+	}
+	return clock >= w.Start || clock < w.End
+}
+
 func (s *Service) Get(ctx context.Context, id int64) (Deployment, error) {
 	var d Deployment
-	err := s.db.QueryRowContext(ctx, selectDeployment+` WHERE id=?`, id).Scan(&d.ID, &d.ProjectID, &d.Status, &d.TriggerType, &d.Branch, &d.CommitSHA, &d.CommitMessage, &d.CommitAuthor, &d.ErrorSummary, &d.ConfigSource, &d.ConfigSnapshot, &d.HasArtifacts, &d.ArtifactSourceDeploymentID, &d.QueuedAt, &d.StartedAt, &d.FinishedAt, &d.CreatedAt)
+	err := s.db.QueryRowContext(ctx, selectDeployment+` WHERE id=?`, id).Scan(&d.ID, &d.ProjectID, &d.Status, &d.TriggerType, &d.Branch, &d.CommitSHA, &d.CommitMessage, &d.CommitAuthor, &d.ErrorSummary, &d.ConfigSource, &d.ConfigSnapshot, &d.HasArtifacts, &d.ArtifactSourceDeploymentID, &d.Environment, &d.ApprovalStatus, &d.ApprovedAt, &d.ApprovedBy, &d.QueuedAt, &d.StartedAt, &d.FinishedAt, &d.CreatedAt)
 	return d, err
 }
 func (s *Service) List(ctx context.Context, projectID string) ([]Deployment, error) {
@@ -265,7 +324,7 @@ func (s *Service) List(ctx context.Context, projectID string) ([]Deployment, err
 	out := []Deployment{}
 	for rows.Next() {
 		var d Deployment
-		if err = rows.Scan(&d.ID, &d.ProjectID, &d.Status, &d.TriggerType, &d.Branch, &d.CommitSHA, &d.CommitMessage, &d.CommitAuthor, &d.ErrorSummary, &d.ConfigSource, &d.ConfigSnapshot, &d.HasArtifacts, &d.ArtifactSourceDeploymentID, &d.QueuedAt, &d.StartedAt, &d.FinishedAt, &d.CreatedAt); err != nil {
+		if err = rows.Scan(&d.ID, &d.ProjectID, &d.Status, &d.TriggerType, &d.Branch, &d.CommitSHA, &d.CommitMessage, &d.CommitAuthor, &d.ErrorSummary, &d.ConfigSource, &d.ConfigSnapshot, &d.HasArtifacts, &d.ArtifactSourceDeploymentID, &d.Environment, &d.ApprovalStatus, &d.ApprovedAt, &d.ApprovedBy, &d.QueuedAt, &d.StartedAt, &d.FinishedAt, &d.CreatedAt); err != nil {
 			return nil, err
 		}
 		out = append(out, d)
@@ -281,7 +340,7 @@ func (s *Service) Claim(ctx context.Context, runnerID string) (Deployment, bool,
 	defer tx.Rollback()
 	var id int64
 	var projectID string
-	err = tx.QueryRowContext(ctx, `SELECT d.id,d.project_id FROM deployments d WHERE d.status='queued' AND NOT EXISTS(SELECT 1 FROM project_locks l WHERE l.project_id=d.project_id) ORDER BY d.queued_at,d.id LIMIT 1`).Scan(&id, &projectID)
+	err = tx.QueryRowContext(ctx, `SELECT d.id,d.project_id FROM deployments d WHERE d.status='queued' AND d.approval_status='approved' AND NOT EXISTS(SELECT 1 FROM project_locks l WHERE l.project_id=d.project_id) ORDER BY d.queued_at,d.id LIMIT 1`).Scan(&id, &projectID)
 	if errors.Is(err, sql.ErrNoRows) {
 		return Deployment{}, false, nil
 	}
@@ -305,6 +364,19 @@ func (s *Service) Claim(ctx context.Context, runnerID string) (Deployment, bool,
 	}
 	d, err := s.Get(ctx, id)
 	return d, true, err
+}
+
+func (s *Service) Approve(ctx context.Context, id int64, approvedBy string) (Deployment, error) {
+	now := time.Now().UTC().Format(time.RFC3339Nano)
+	res, err := s.db.ExecContext(ctx, `UPDATE deployments SET approval_status='approved',approved_at=?,approved_by=? WHERE id=? AND status='queued' AND approval_status='pending'`, now, approvedBy, id)
+	if err != nil {
+		return Deployment{}, err
+	}
+	n, _ := res.RowsAffected()
+	if n != 1 {
+		return Deployment{}, errors.New("deployment is not awaiting approval")
+	}
+	return s.Get(ctx, id)
 }
 
 func (s *Service) Cancel(ctx context.Context, id int64) error {
@@ -357,4 +429,4 @@ func (s *Service) Finish(ctx context.Context, id int64, status, message string) 
 	return tx.Commit()
 }
 
-const selectDeployment = `SELECT id,project_id,status,trigger_type,branch,COALESCE(commit_sha,''),commit_message,commit_author,error_summary,config_source,config_snapshot,artifact_path IS NOT NULL,artifact_source_deployment_id,queued_at,started_at,finished_at,created_at FROM deployments`
+const selectDeployment = `SELECT id,project_id,status,trigger_type,branch,COALESCE(commit_sha,''),commit_message,commit_author,error_summary,config_source,config_snapshot,artifact_path IS NOT NULL,artifact_source_deployment_id,environment,approval_status,approved_at,COALESCE(approved_by,''),queued_at,started_at,finished_at,created_at FROM deployments`

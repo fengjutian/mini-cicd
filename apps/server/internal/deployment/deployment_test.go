@@ -22,6 +22,12 @@ type configResolver struct{ fakeResolver }
 func (configResolver) ReadFile(context.Context, string, string, string, string) ([]byte, error) {
 	return []byte("version: 1\npipeline:\n  build:\n    - name: Repository build\n      command: make build\n  deploy:\n    - name: Repository deploy\n      command: make deploy\ntimeouts:\n  step: 2m\n  deployment: 10m\n"), nil
 }
+
+type environmentResolver struct{ fakeResolver }
+
+func (environmentResolver) ReadFile(context.Context, string, string, string, string) ([]byte, error) {
+	return []byte("version: 1\npipeline:\n  deploy: [{name: deploy, command: publish}]\nenvironments:\n  staging:\n    allowedBranches: [main]\n  production:\n    approvalRequired: true\n    allowedBranches: [main]\n"), nil
+}
 func testDB(t *testing.T) *sql.DB {
 	t.Helper()
 	db, err := database.Open(filepath.Join(t.TempDir(), "test.db"))
@@ -205,5 +211,31 @@ func TestRollbackCopiesOnlyDeployPhaseAndSnapshots(t *testing.T) {
 	}
 	if rolled.ArtifactSourceDeploymentID == nil || *rolled.ArtifactSourceDeploymentID != source.ID {
 		t.Fatalf("source: %#v", rolled)
+	}
+}
+
+func TestProtectedEnvironmentRequiresApproval(t *testing.T) {
+	db := testDB(t)
+	insertProject(t, db, "one")
+	s := New(db, environmentResolver{})
+	d, err := s.CreateForEnvironment(context.Background(), "one", "manual", "production")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if d.Environment != "production" || d.ApprovalStatus != "pending" {
+		t.Fatalf("deployment: %#v", d)
+	}
+	if _, ok, err := s.Claim(context.Background(), "runner"); err != nil || ok {
+		t.Fatalf("pending deployment was claimable: %v %v", ok, err)
+	}
+	approved, err := s.Approve(context.Background(), d.ID, "owner")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if approved.ApprovalStatus != "approved" || approved.ApprovedBy != "owner" {
+		t.Fatalf("approval: %#v", approved)
+	}
+	if _, ok, err := s.Claim(context.Background(), "runner"); err != nil || !ok {
+		t.Fatalf("approved deployment not claimable: %v %v", ok, err)
 	}
 }

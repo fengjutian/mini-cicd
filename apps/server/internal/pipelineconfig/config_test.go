@@ -78,3 +78,14 @@ func TestArtifactConfig(t *testing.T) {
 		t.Fatalf("artifacts: %#v", got.Artifacts)
 	}
 }
+
+func TestEnvironmentConfig(t *testing.T) {
+	raw := []byte("version: 1\npipeline:\n  deploy: [{name: x, command: y}]\nenvironments:\n  production:\n    approvalRequired: true\n    allowedBranches: [main]\n    deploymentWindow:\n      days: [mon, tue, wed, thu, fri]\n      start: 09:00\n      end: 18:00\n      timezone: +08:00\n")
+	got, err := Parse(raw, Resolved{StepTimeout: time.Minute, DeploymentTimeout: time.Hour})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !got.Environments["production"].ApprovalRequired {
+		t.Fatal("approval not parsed")
+	}
+}

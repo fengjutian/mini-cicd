@@ -10,13 +10,31 @@ import (
 )
 
 func (s *Server) createDeployment(w http.ResponseWriter, r *http.Request) {
-	d, err := s.deps.Create(r.Context(), r.PathValue("id"), "manual")
+	environment := r.URL.Query().Get("environment")
+	if environment == "" {
+		environment = "production"
+	}
+	d, err := s.deps.CreateForEnvironment(r.Context(), r.PathValue("id"), "manual", environment)
 	if err != nil {
 		s.deploymentError(w, err)
 		return
 	}
 	s.runner.Wake()
 	writeJSON(w, http.StatusCreated, d)
+}
+func (s *Server) approveDeployment(w http.ResponseWriter, r *http.Request) {
+	id, ok := deploymentID(w, r)
+	if !ok {
+		return
+	}
+	u := r.Context().Value(userKey).(user)
+	d, err := s.deps.Approve(r.Context(), id, u.Username)
+	if err != nil {
+		s.deploymentError(w, err)
+		return
+	}
+	s.runner.Wake()
+	writeJSON(w, http.StatusOK, d)
 }
 func (s *Server) listDeployments(w http.ResponseWriter, r *http.Request) {
 	items, err := s.deps.List(r.Context(), r.PathValue("id"))

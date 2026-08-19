@@ -87,6 +87,35 @@ func (s *Server) deleteVariable(w http.ResponseWriter, r *http.Request) {
 	}
 	w.WriteHeader(http.StatusNoContent)
 }
+func (s *Server) listEnvironmentVariables(w http.ResponseWriter, r *http.Request) {
+	items, err := s.projects.ListEnvironmentVariables(r.Context(), r.PathValue("id"), r.PathValue("environment"))
+	if err != nil {
+		s.projectError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"items": items})
+}
+func (s *Server) putEnvironmentVariable(w http.ResponseWriter, r *http.Request) {
+	var in project.VariableInput
+	if err := decodeJSON(r, &in); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid_request", err.Error())
+		return
+	}
+	in.Name = r.PathValue("name")
+	item, err := s.projects.PutEnvironmentVariable(r.Context(), r.PathValue("id"), r.PathValue("environment"), in)
+	if err != nil {
+		s.projectError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, item)
+}
+func (s *Server) deleteEnvironmentVariable(w http.ResponseWriter, r *http.Request) {
+	if err := s.projects.DeleteEnvironmentVariable(r.Context(), r.PathValue("id"), r.PathValue("environment"), r.PathValue("name")); err != nil {
+		s.projectError(w, err)
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
 func (s *Server) projectError(w http.ResponseWriter, err error) {
 	switch {
 	case errors.Is(err, sql.ErrNoRows):
