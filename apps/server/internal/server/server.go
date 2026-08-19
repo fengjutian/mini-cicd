@@ -27,6 +27,7 @@ import (
 	"github.com/charlesfeng/mini-cicd/apps/server/internal/logstore"
 	"github.com/charlesfeng/mini-cicd/apps/server/internal/maintenance"
 	"github.com/charlesfeng/mini-cicd/apps/server/internal/notification"
+	"github.com/charlesfeng/mini-cicd/apps/server/internal/pipelinecache"
 	"github.com/charlesfeng/mini-cicd/apps/server/internal/project"
 	"github.com/charlesfeng/mini-cicd/apps/server/internal/providerstatus"
 	"github.com/charlesfeng/mini-cicd/apps/server/internal/runner"
@@ -107,9 +108,13 @@ func New(db *sql.DB, cfg config.Config, logger *slog.Logger) (*Server, error) {
 	if err != nil {
 		return nil, err
 	}
+	caches, err := pipelinecache.New(cfg.DataDir)
+	if err != nil {
+		return nil, err
+	}
 	s := &Server{db: db, cfg: cfg, logger: logger, limiter: newLoginLimiter(), webhookLimiter: newRequestLimiter(120), projects: project.New(db, box), applications: application.New(db), deps: deps, logs: logs, box: box}
 	s.webhookCtx, s.webhookCancel = context.WithCancel(context.Background())
-	s.runner = runner.New(db, deps, git, spaces, logs, box, cfg.Shell, cfg.GlobalParallel, cfg.CancelGrace, logger).UseRemote(cfg.RunnerEndpoint).UseArtifacts(artifacts)
+	s.runner = runner.New(db, deps, git, spaces, logs, box, cfg.Shell, cfg.GlobalParallel, cfg.CancelGrace, logger).UseRemote(cfg.RunnerEndpoint).UseArtifacts(artifacts).UseCache(caches)
 	s.maintenance = maintenance.New(db, logs, spaces, cfg.CleanupInterval, cfg.WorkspaceRetention, cfg.LogRetention, cfg.DeploymentRetention, logger).ConfigureBackups(cfg.DatabasePath, filepath.Join(cfg.DataDir, "backups"), cfg.BackupInterval, cfg.BackupRetention).ConfigureAudit(cfg.AuditRetention, cfg.AuditMaxEvents)
 	s.notifications = notification.New(db, box, logger)
 	s.providerStatus = providerstatus.New(db, box, logger)
@@ -144,6 +149,7 @@ func New(db *sql.DB, cfg config.Config, logger *slog.Logger) (*Server, error) {
 	mux.HandleFunc("POST /api/v1/projects/{id}/application/{action}", s.requireAuth(s.applicationAction))
 	mux.HandleFunc("GET /api/v1/projects/{id}/notification-deliveries", s.requireAuth(s.listNotificationDeliveries))
 	mux.HandleFunc("GET /api/v1/projects/{id}/commit-status-deliveries", s.requireAuth(s.listCommitStatusDeliveries))
+	mux.HandleFunc("POST /api/v1/projects/{id}/commit-status-deliveries/{deliveryID}/retry", s.requireAuth(s.retryCommitStatusDelivery))
 	mux.HandleFunc("GET /api/v1/deployments/{id}", s.requireAuth(s.getDeployment))
 	mux.HandleFunc("GET /api/v1/deployments/{id}/steps", s.requireAuth(s.deploymentSteps))
 	mux.HandleFunc("POST /api/v1/deployments/{id}/cancel", s.requireAuth(s.cancelDeployment))
@@ -152,6 +158,7 @@ func New(db *sql.DB, cfg config.Config, logger *slog.Logger) (*Server, error) {
 	mux.HandleFunc("POST /api/v1/deployments/{id}/approve", s.requireAuth(s.approveDeployment))
 	mux.HandleFunc("GET /api/v1/deployments/{id}/logs", s.requireAuth(s.deploymentLogs))
 	mux.HandleFunc("GET /healthz", s.health)
+	mux.HandleFunc("GET /metrics", s.metrics)
 	mux.HandleFunc("POST /api/v1/webhooks/{projectID}/{provider}", s.webhook)
 	mux.HandleFunc("GET /api/v1/dashboard", s.requireAuth(s.dashboard))
 	mux.HandleFunc("GET /", s.index)

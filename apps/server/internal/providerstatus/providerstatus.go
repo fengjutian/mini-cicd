@@ -55,6 +55,7 @@ func (m *Manager) Start() {
 	}()
 }
 func (m *Manager) Stop() { m.cancel(); m.wg.Wait() }
+func (m *Manager) Wake() { go m.drain() }
 func (m *Manager) drain() {
 	for {
 		j, ok, err := m.claim()

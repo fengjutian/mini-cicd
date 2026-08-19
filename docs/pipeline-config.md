@@ -172,3 +172,18 @@ GitLab uses the same structure with `provider: gitlab` and a project path such
 as `group/project`. Queue and terminal statuses are delivered through a durable
 outbox with up to five attempts. Tokens are read only from the selected
 environment's encrypted deployment-variable snapshot.
+
+## Pipeline cache
+
+```yaml
+cache:
+  key: node
+  keyFiles: [package-lock.json]
+  paths: [node_modules, .npm]
+  restoreKeys: [node-]
+  retention: 10
+```
+
+The cache key combines `key` with a SHA-256 digest of `keyFiles`. Cache paths
+must remain inside the checkout and symbolic links are rejected. A cache is
+restored after checkout and saved after successful build steps.

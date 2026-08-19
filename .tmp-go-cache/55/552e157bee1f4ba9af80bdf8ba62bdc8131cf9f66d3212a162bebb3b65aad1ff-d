@@ -1,5 +1,0 @@
-./client.go
-./process_windows.go
-./protocol.go
-./server.go
-./server_test.go

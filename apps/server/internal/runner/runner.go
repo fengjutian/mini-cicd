@@ -19,6 +19,7 @@ import (
 	"github.com/charlesfeng/mini-cicd/apps/server/internal/deployment"
 	"github.com/charlesfeng/mini-cicd/apps/server/internal/gitops"
 	"github.com/charlesfeng/mini-cicd/apps/server/internal/logstore"
+	"github.com/charlesfeng/mini-cicd/apps/server/internal/pipelinecache"
 	"github.com/charlesfeng/mini-cicd/apps/server/internal/pipelineconfig"
 	"github.com/charlesfeng/mini-cicd/apps/server/internal/procenv"
 	"github.com/charlesfeng/mini-cicd/apps/server/internal/runneripc"
@@ -40,6 +41,7 @@ type Manager struct {
 	wake      chan struct{}
 	endpoint  string
 	artifacts *artifact.Store
+	cache     *pipelinecache.Store
 	wg        sync.WaitGroup
 	ctx       context.Context
 	cancel    context.CancelFunc
@@ -48,8 +50,9 @@ type Manager struct {
 	inflight   map[int64]context.CancelFunc
 }
 
-func (m *Manager) UseRemote(endpoint string) *Manager          { m.endpoint = endpoint; return m }
-func (m *Manager) UseArtifacts(store *artifact.Store) *Manager { m.artifacts = store; return m }
+func (m *Manager) UseRemote(endpoint string) *Manager           { m.endpoint = endpoint; return m }
+func (m *Manager) UseArtifacts(store *artifact.Store) *Manager  { m.artifacts = store; return m }
+func (m *Manager) UseCache(store *pipelinecache.Store) *Manager { m.cache = store; return m }
 
 // registerInflight stores the cancel function for a running deployment so
 // that an external Cancel request can short-circuit the 250ms poll loop.
@@ -160,10 +163,14 @@ func (m *Manager) execute(d deployment.Deployment) {
 func (m *Manager) run(d deployment.Deployment) error {
 	var repo string
 	var stepSeconds, deploySeconds int
-	var artifactRaw string
+	var artifactRaw, cacheRaw string
 	var artifactSource sql.NullInt64
-	if err := m.db.QueryRow(`SELECT p.repository_url,d.step_timeout_seconds,d.deployment_timeout_seconds,d.artifact_config_json,d.artifact_source_deployment_id FROM deployments d JOIN projects p ON p.id=d.project_id WHERE d.id=?`, d.ID).Scan(&repo, &stepSeconds, &deploySeconds, &artifactRaw, &artifactSource); err != nil {
+	if err := m.db.QueryRow(`SELECT p.repository_url,d.step_timeout_seconds,d.deployment_timeout_seconds,d.artifact_config_json,d.artifact_source_deployment_id,d.cache_config_json FROM deployments d JOIN projects p ON p.id=d.project_id WHERE d.id=?`, d.ID).Scan(&repo, &stepSeconds, &deploySeconds, &artifactRaw, &artifactSource, &cacheRaw); err != nil {
 		return err
+	}
+	var cacheConfig pipelineconfig.CacheConfig
+	if err := json.Unmarshal([]byte(cacheRaw), &cacheConfig); err != nil {
+		return errors.New("invalid cache configuration snapshot")
 	}
 	var artifactConfig pipelineconfig.ArtifactConfig
 	if err := json.Unmarshal([]byte(artifactRaw), &artifactConfig); err != nil {
@@ -220,6 +227,28 @@ func (m *Manager) run(d deployment.Deployment) error {
 		}
 		return err
 	}
+	cacheKey := ""
+	if len(cacheConfig.Paths) > 0 && !artifactSource.Valid {
+		if m.cache == nil {
+			return errors.New("pipeline cache store is unavailable")
+		}
+		cacheKey, err = m.cache.Key(space, cacheConfig)
+		if err != nil {
+			return err
+		}
+		hit, restored, restoreErr := m.cache.Restore(d.ProjectID, cacheKey, space, cacheConfig)
+		if restoreErr != nil {
+			return restoreErr
+		}
+		if _, err = m.db.Exec(`UPDATE deployments SET cache_key=?,cache_hit=? WHERE id=?`, restored, hit, d.ID); err != nil {
+			return err
+		}
+		if hit {
+			_ = writer.WriteStep(0, "system", "restored pipeline cache "+restored)
+		} else {
+			_ = writer.WriteStep(0, "system", "pipeline cache miss "+cacheKey)
+		}
+	}
 	if artifactSource.Valid {
 		if m.artifacts == nil {
 			return errors.New("artifact store is unavailable")
@@ -261,7 +290,15 @@ func (m *Manager) run(d deployment.Deployment) error {
 	}
 	rows.Close()
 	artifactsSaved := false
+	cacheSaved := false
 	for _, x := range steps {
+		if x.phase == "deploy" && !cacheSaved && cacheKey != "" {
+			if err = m.cache.Save(d.ProjectID, cacheKey, space, cacheConfig); err != nil {
+				return err
+			}
+			_ = writer.WriteStep(0, "system", "saved pipeline cache "+cacheKey)
+			cacheSaved = true
+		}
 		if x.phase == "deploy" && !artifactsSaved && len(artifactConfig.Paths) > 0 {
 			if err = m.saveArtifacts(d, space, artifactConfig, writer); err != nil {
 				return err
@@ -279,6 +316,12 @@ func (m *Manager) run(d deployment.Deployment) error {
 			_ = writer.WriteStep(x.id, "system", "step failed: "+err.Error())
 			return err
 		}
+	}
+	if !cacheSaved && cacheKey != "" {
+		if err = m.cache.Save(d.ProjectID, cacheKey, space, cacheConfig); err != nil {
+			return err
+		}
+		_ = writer.WriteStep(0, "system", "saved pipeline cache "+cacheKey)
 	}
 	if !artifactsSaved && len(artifactConfig.Paths) > 0 {
 		if err = m.saveArtifacts(d, space, artifactConfig, writer); err != nil {

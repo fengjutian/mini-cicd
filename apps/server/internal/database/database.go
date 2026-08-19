@@ -90,7 +90,21 @@ func Migrate(db *sql.DB) error {
 			return err
 		}
 	}
+	if version < 12 {
+		if err := applyV12(db); err != nil {
+			return err
+		}
+	}
 	return nil
+}
+
+func applyV12(db *sql.DB) error {
+	for _, c := range []struct{ name, def string }{{"cache_config_json", "TEXT NOT NULL DEFAULT '{}'"}, {"cache_key", "TEXT NOT NULL DEFAULT ''"}, {"cache_hit", "INTEGER"}} {
+		if err := ensureColumn(db, "deployments", c.name, c.def); err != nil {
+			return err
+		}
+	}
+	return recordMigration(db, 12)
 }
 
 func applyV11(db *sql.DB) error {

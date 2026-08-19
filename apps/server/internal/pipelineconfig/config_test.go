@@ -100,3 +100,14 @@ func TestCommitStatusConfig(t *testing.T) {
 		t.Fatalf("status: %#v", got.CommitStatus)
 	}
 }
+
+func TestCacheConfig(t *testing.T) {
+	raw := []byte("version: 1\npipeline:\n  build: [{name: build, command: npm_ci}]\ncache:\n  key: node\n  keyFiles: [package-lock.json]\n  paths: [node_modules]\n  restoreKeys: [node-]\n")
+	got, err := Parse(raw, Resolved{StepTimeout: time.Minute, DeploymentTimeout: time.Hour})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Cache.Key != "node" || got.Cache.Retention != 10 || len(got.Cache.Paths) != 1 {
+		t.Fatalf("cache: %#v", got.Cache)
+	}
+}

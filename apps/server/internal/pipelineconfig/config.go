@@ -27,6 +27,7 @@ type Config struct {
 	Application   Application            `yaml:"application" json:"application"`
 	Notifications []Notification         `yaml:"notifications" json:"notifications"`
 	Artifacts     ArtifactConfig         `yaml:"artifacts" json:"artifacts"`
+	Cache         CacheConfig            `yaml:"cache" json:"cache"`
 	Environments  map[string]Environment `yaml:"environments" json:"environments"`
 	CommitStatus  CommitStatus           `yaml:"commitStatus" json:"commitStatus"`
 }
@@ -56,6 +57,14 @@ type DeploymentWindow struct {
 type ArtifactConfig struct {
 	Paths     []string `yaml:"paths" json:"paths"`
 	Retention int      `yaml:"retention" json:"retention"`
+}
+
+type CacheConfig struct {
+	Key         string   `yaml:"key" json:"key"`
+	KeyFiles    []string `yaml:"keyFiles" json:"keyFiles"`
+	Paths       []string `yaml:"paths" json:"paths"`
+	RestoreKeys []string `yaml:"restoreKeys" json:"restoreKeys"`
+	Retention   int      `yaml:"retention" json:"retention"`
 }
 
 type Notification struct {
@@ -89,6 +98,7 @@ type Resolved struct {
 	Application                    Application
 	Notifications                  []Notification
 	Artifacts                      ArtifactConfig
+	Cache                          CacheConfig
 	Environments                   map[string]Environment
 	CommitStatus                   CommitStatus
 }
@@ -111,6 +121,7 @@ func Parse(raw []byte, defaults Resolved) (Resolved, error) {
 	out.Application = cfg.Application
 	out.Notifications = cfg.Notifications
 	out.Artifacts = cfg.Artifacts
+	out.Cache = cfg.Cache
 	out.Environments = cfg.Environments
 	out.CommitStatus = cfg.CommitStatus
 	if cfg.Timeouts.Step != "" {
@@ -155,6 +166,9 @@ func Parse(raw []byte, defaults Resolved) (Resolved, error) {
 	if err := validateArtifacts(&out.Artifacts); err != nil {
 		return Resolved{}, err
 	}
+	if err := validateCache(&out.Cache); err != nil {
+		return Resolved{}, err
+	}
 	if err := validateEnvironments(out.Environments); err != nil {
 		return Resolved{}, err
 	}
@@ -162,6 +176,44 @@ func Parse(raw []byte, defaults Resolved) (Resolved, error) {
 		return Resolved{}, err
 	}
 	return out, nil
+}
+
+func validateCache(cfg *CacheConfig) error {
+	if len(cfg.Paths) == 0 {
+		if cfg.Key != "" || len(cfg.KeyFiles) != 0 || len(cfg.RestoreKeys) != 0 || cfg.Retention != 0 {
+			return errors.New("cache.paths is required when cache is configured")
+		}
+		return nil
+	}
+	if strings.TrimSpace(cfg.Key) == "" || len(cfg.Key) > 100 || strings.ContainsAny(cfg.Key, `/\\`) {
+		return errors.New("cache.key is required and must not contain path separators")
+	}
+	if cfg.Retention == 0 {
+		cfg.Retention = 10
+	}
+	if cfg.Retention < 1 || cfg.Retention > 100 {
+		return errors.New("cache.retention must be between 1 and 100")
+	}
+	seen := map[string]bool{}
+	for _, list := range []*[]string{&cfg.Paths, &cfg.KeyFiles} {
+		for i, value := range *list {
+			if err := safeRelativePath(value); err != nil {
+				return fmt.Errorf("cache path: %w", err)
+			}
+			clean := path.Clean(strings.ReplaceAll(value, `\`, "/"))
+			if seen[clean] {
+				return errors.New("cache paths and keyFiles must be unique")
+			}
+			seen[clean] = true
+			(*list)[i] = clean
+		}
+	}
+	for _, prefix := range cfg.RestoreKeys {
+		if prefix == "" || len(prefix) > 100 || strings.ContainsAny(prefix, `/\\`) {
+			return errors.New("cache.restoreKeys contains an invalid prefix")
+		}
+	}
+	return nil
 }
 
 func validateCommitStatus(cfg *CommitStatus) error {

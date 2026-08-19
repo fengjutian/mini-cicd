@@ -113,6 +113,11 @@ https://deploy.example.com/api/v1/webhooks/<project-id>/<provider>
 
 `provider` 为 `github`、`gitlab` 或 `gitea`。项目必须开启 Auto Deploy 并保存 Webhook Secret。
 
+## Prometheus
+
+Prometheus can scrape `GET /metrics`. The endpoint exposes deployment state,
+pipeline cache hit/miss counters, and failed notification/provider deliveries.
+
 - GitHub：验证 `X-Hub-Signature-256`。
 - GitLab：常量时间比较 `X-Gitlab-Token`。
 - Gitea：验证 `X-Gitea-Signature`。
