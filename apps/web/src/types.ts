@@ -13,3 +13,4 @@ export type DeploymentStep = { id: number; deploymentId: number; sequence: numbe
 export type Variable = { name: string; version: number; isSecret: boolean; value?: string; updatedAt: string }
 export type ApplicationResult = { adapter: string; deploymentId: number; output: string; checkedAt: string }
 export type CommitStatusDelivery = { id: number; deploymentId: number; deploymentStatus: string; status: string; attempts: number; lastError: string; createdAt: string }
+export type DeploymentSchedule = { id:number; name:string; environment:string; intervalMinutes:number; priority:number; cancelPrevious:boolean; parameters:Record<string,string>; enabled:boolean; nextRunAt:string; lastRunAt?:string; lastDeploymentId?:number; lastError:string }

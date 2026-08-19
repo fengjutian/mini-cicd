@@ -100,7 +100,20 @@ func Migrate(db *sql.DB) error {
 			return err
 		}
 	}
+	if version < 14 {
+		if err := applyV14(db); err != nil {
+			return err
+		}
+	}
 	return nil
+}
+
+func applyV14(db *sql.DB) error {
+	const schema = `CREATE TABLE IF NOT EXISTS deployment_schedules(id INTEGER PRIMARY KEY AUTOINCREMENT,project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,name TEXT NOT NULL,environment TEXT NOT NULL DEFAULT 'production',interval_minutes INTEGER NOT NULL CHECK(interval_minutes BETWEEN 1 AND 525600),priority INTEGER NOT NULL DEFAULT 0,cancel_previous INTEGER NOT NULL DEFAULT 0,parameters_json TEXT NOT NULL DEFAULT '{}',enabled INTEGER NOT NULL DEFAULT 1,next_run_at TEXT NOT NULL,last_run_at TEXT,last_deployment_id INTEGER REFERENCES deployments(id) ON DELETE SET NULL,last_error TEXT NOT NULL DEFAULT '',created_at TEXT NOT NULL,updated_at TEXT NOT NULL,UNIQUE(project_id,name));CREATE INDEX IF NOT EXISTS idx_deployment_schedules_due ON deployment_schedules(enabled,next_run_at,id);`
+	if _, err := db.Exec(schema); err != nil {
+		return err
+	}
+	return recordMigration(db, 14)
 }
 
 func applyV13(db *sql.DB) error {
