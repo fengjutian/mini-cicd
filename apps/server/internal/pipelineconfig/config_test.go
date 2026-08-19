@@ -56,3 +56,14 @@ func TestAdapterCanBeTheOnlyDeployStep(t *testing.T) {
 		t.Fatalf("expected generated deploy step, got %#v", got.Deploy)
 	}
 }
+
+func TestNotificationConfig(t *testing.T) {
+	raw := []byte("version: 1\npipeline:\n  build: [{name: x, command: y}]\nnotifications:\n  - name: ops\n    type: webhook\n    urlVariable: DEPLOY_WEBHOOK_URL\n    events: [succeeded, failed]\n")
+	got, err := Parse(raw, Resolved{StepTimeout: time.Minute, DeploymentTimeout: time.Hour})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got.Notifications) != 1 || got.Notifications[0].URLVariable != "DEPLOY_WEBHOOK_URL" {
+		t.Fatalf("unexpected notifications: %#v", got.Notifications)
+	}
+}

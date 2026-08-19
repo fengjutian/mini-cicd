@@ -25,6 +25,7 @@ import (
 	"github.com/charlesfeng/mini-cicd/apps/server/internal/gitops"
 	"github.com/charlesfeng/mini-cicd/apps/server/internal/logstore"
 	"github.com/charlesfeng/mini-cicd/apps/server/internal/maintenance"
+	"github.com/charlesfeng/mini-cicd/apps/server/internal/notification"
 	"github.com/charlesfeng/mini-cicd/apps/server/internal/project"
 	"github.com/charlesfeng/mini-cicd/apps/server/internal/runner"
 	"github.com/charlesfeng/mini-cicd/apps/server/internal/secret"
@@ -64,6 +65,7 @@ type Server struct {
 	webhookCancel  context.CancelFunc
 	webhookWG      sync.WaitGroup
 	maintenance    *maintenance.Manager
+	notifications  *notification.Manager
 }
 
 func New(db *sql.DB, cfg config.Config, logger *slog.Logger) (*Server, error) {
@@ -102,6 +104,7 @@ func New(db *sql.DB, cfg config.Config, logger *slog.Logger) (*Server, error) {
 	s.webhookCtx, s.webhookCancel = context.WithCancel(context.Background())
 	s.runner = runner.New(db, deps, git, spaces, logs, box, cfg.Shell, cfg.GlobalParallel, cfg.CancelGrace, logger).UseRemote(cfg.RunnerEndpoint)
 	s.maintenance = maintenance.New(db, logs, spaces, cfg.CleanupInterval, cfg.WorkspaceRetention, cfg.LogRetention, cfg.DeploymentRetention, logger).ConfigureBackups(cfg.DatabasePath, filepath.Join(cfg.DataDir, "backups"), cfg.BackupInterval, cfg.BackupRetention).ConfigureAudit(cfg.AuditRetention, cfg.AuditMaxEvents)
+	s.notifications = notification.New(db, box, logger)
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /api/v1/status", s.status)
 	mux.HandleFunc("POST /api/v1/setup", s.setup)
@@ -127,6 +130,7 @@ func New(db *sql.DB, cfg config.Config, logger *slog.Logger) (*Server, error) {
 	mux.HandleFunc("GET /api/v1/projects/{id}/webhook-deliveries", s.requireAuth(s.listWebhookDeliveries))
 	mux.HandleFunc("GET /api/v1/projects/{id}/application/status", s.requireAuth(s.applicationStatus))
 	mux.HandleFunc("GET /api/v1/projects/{id}/application/logs", s.requireAuth(s.applicationLogs))
+	mux.HandleFunc("GET /api/v1/projects/{id}/notification-deliveries", s.requireAuth(s.listNotificationDeliveries))
 	mux.HandleFunc("GET /api/v1/deployments/{id}", s.requireAuth(s.getDeployment))
 	mux.HandleFunc("GET /api/v1/deployments/{id}/steps", s.requireAuth(s.deploymentSteps))
 	mux.HandleFunc("POST /api/v1/deployments/{id}/cancel", s.requireAuth(s.cancelDeployment))
@@ -140,11 +144,13 @@ func New(db *sql.DB, cfg config.Config, logger *slog.Logger) (*Server, error) {
 	s.runner.Start()
 	s.recoverWebhooks()
 	s.maintenance.Start()
+	s.notifications.Start()
 	return s, nil
 }
 
 func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) { s.handler.ServeHTTP(w, r) }
 func (s *Server) Close() {
+	s.notifications.Stop()
 	s.maintenance.Stop()
 	s.webhookCancel()
 	s.webhookWG.Wait()

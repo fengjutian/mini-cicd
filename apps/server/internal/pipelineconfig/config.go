@@ -24,7 +24,15 @@ type Config struct {
 		Step       string `yaml:"step" json:"step,omitempty"`
 		Deployment string `yaml:"deployment" json:"deployment,omitempty"`
 	} `yaml:"timeouts" json:"timeouts"`
-	Application Application `yaml:"application" json:"application"`
+	Application   Application    `yaml:"application" json:"application"`
+	Notifications []Notification `yaml:"notifications" json:"notifications"`
+}
+
+type Notification struct {
+	Name        string   `yaml:"name" json:"name"`
+	Type        string   `yaml:"type" json:"type"`
+	URLVariable string   `yaml:"urlVariable" json:"urlVariable"`
+	Events      []string `yaml:"events" json:"events"`
 }
 
 type Application struct {
@@ -49,6 +57,7 @@ type Resolved struct {
 	Build, Deploy                  []project.Step
 	StepTimeout, DeploymentTimeout time.Duration
 	Application                    Application
+	Notifications                  []Notification
 }
 
 var safeName = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9_.@-]*$`)
@@ -67,6 +76,7 @@ func Parse(raw []byte, defaults Resolved) (Resolved, error) {
 	out.Build = convert(cfg.Pipeline.Build)
 	out.Deploy = convert(cfg.Pipeline.Deploy)
 	out.Application = cfg.Application
+	out.Notifications = cfg.Notifications
 	if cfg.Timeouts.Step != "" {
 		d, err := time.ParseDuration(cfg.Timeouts.Step)
 		if err != nil || d <= 0 {
@@ -103,7 +113,41 @@ func Parse(raw []byte, defaults Resolved) (Resolved, error) {
 	if len(out.Build)+len(out.Deploy) == 0 {
 		return Resolved{}, errors.New("pipeline or application adapter must contain at least one step")
 	}
+	if err := validateNotifications(out.Notifications); err != nil {
+		return Resolved{}, err
+	}
 	return out, nil
+}
+
+func validateNotifications(items []Notification) error {
+	variable := regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*$`)
+	seen := map[string]bool{}
+	allowed := map[string]bool{"succeeded": true, "failed": true, "cancelled": true, "timed_out": true}
+	for i := range items {
+		n := &items[i]
+		n.Name, n.Type, n.URLVariable = strings.TrimSpace(n.Name), strings.ToLower(strings.TrimSpace(n.Type)), strings.TrimSpace(n.URLVariable)
+		if n.Name == "" || len(n.Name) > 64 || seen[n.Name] {
+			return errors.New("notification names must be unique and non-empty")
+		}
+		seen[n.Name] = true
+		if n.Type != "webhook" {
+			return errors.New("notification type must be webhook")
+		}
+		if !variable.MatchString(n.URLVariable) {
+			return errors.New("notification urlVariable must be an environment variable name")
+		}
+		if len(n.Events) == 0 {
+			n.Events = []string{"failed", "timed_out"}
+		}
+		events := map[string]bool{}
+		for _, event := range n.Events {
+			if !allowed[event] || events[event] {
+				return errors.New("notification events contain an invalid or duplicate status")
+			}
+			events[event] = true
+		}
+	}
+	return nil
 }
 
 func applicationStep(app *Application) (*project.Step, error) {

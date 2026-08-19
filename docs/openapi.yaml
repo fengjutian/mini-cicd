@@ -59,6 +59,8 @@ paths:
     get: {tags: [Projects], summary: Read status using the latest successful application adapter, parameters: [{$ref: '#/components/parameters/ProjectId'}], responses: {'200': {$ref: '#/components/responses/JSON'}, '409': {$ref: '#/components/responses/Error'}}}
   /projects/{id}/application/logs:
     get: {tags: [Projects], summary: Read bounded application logs, parameters: [{$ref: '#/components/parameters/ProjectId'}, {name: lines, in: query, schema: {type: integer, minimum: 1, maximum: 2000, default: 200}}], responses: {'200': {$ref: '#/components/responses/JSON'}, '409': {$ref: '#/components/responses/Error'}}}
+  /projects/{id}/notification-deliveries:
+    get: {tags: [Projects], summary: List deployment notification delivery status, parameters: [{$ref: '#/components/parameters/ProjectId'}], responses: {'200': {$ref: '#/components/responses/JSON'}}}
   /deployments/{deploymentId}:
     get: {tags: [Deployments], summary: Get deployment, parameters: [{$ref: '#/components/parameters/DeploymentId'}], responses: {'200': {description: Deployment, content: {application/json: {schema: {$ref: '#/components/schemas/Deployment'}}}}}}
   /deployments/{deploymentId}/steps:

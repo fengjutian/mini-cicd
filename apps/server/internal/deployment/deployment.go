@@ -30,6 +30,7 @@ type projectSnapshot struct {
 	stepTimeout, deploymentTimeout                                 int
 	configSource, configSnapshot                                   string
 	applicationJSON                                                string
+	notificationJSON                                               string
 }
 type Step struct {
 	ID               int64   `json:"id"`
@@ -139,6 +140,8 @@ func (s *Service) createResolved(ctx context.Context, projectID, trigger string,
 			build, deploy = resolved.Build, resolved.Deploy
 			applicationRaw, _ := json.Marshal(resolved.Application)
 			snapshot.applicationJSON = string(applicationRaw)
+			notificationRaw, _ := json.Marshal(resolved.Notifications)
+			snapshot.notificationJSON = string(notificationRaw)
 			snapshot.stepTimeout, snapshot.deploymentTimeout = int(resolved.StepTimeout/time.Second), int(resolved.DeploymentTimeout/time.Second)
 			snapshot.configSource, snapshot.configSnapshot = "repository", string(raw)
 		} else if !errors.Is(readErr, os.ErrNotExist) {
@@ -154,7 +157,10 @@ func (s *Service) createResolved(ctx context.Context, projectID, trigger string,
 	if snapshot.applicationJSON == "" {
 		snapshot.applicationJSON = "{}"
 	}
-	res, err := tx.ExecContext(ctx, `INSERT INTO deployments(project_id,status,trigger_type,branch,commit_sha,commit_message,commit_author,queued_at,created_at,health_enabled,health_url,health_initial_delay_seconds,health_timeout_seconds,health_retries,health_retry_interval_seconds,health_expected_status,step_timeout_seconds,deployment_timeout_seconds,config_source,config_snapshot,application_config_json) VALUES(?,'queued',?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`, projectID, trigger, snapshot.branch, commit.SHA, commit.Message, commit.Author, now, now, snapshot.healthEnabled, snapshot.healthURL, snapshot.healthInitial, snapshot.healthTimeout, snapshot.healthRetries, snapshot.healthInterval, snapshot.healthExpected, snapshot.stepTimeout, snapshot.deploymentTimeout, snapshot.configSource, snapshot.configSnapshot, snapshot.applicationJSON)
+	if snapshot.notificationJSON == "" {
+		snapshot.notificationJSON = "[]"
+	}
+	res, err := tx.ExecContext(ctx, `INSERT INTO deployments(project_id,status,trigger_type,branch,commit_sha,commit_message,commit_author,queued_at,created_at,health_enabled,health_url,health_initial_delay_seconds,health_timeout_seconds,health_retries,health_retry_interval_seconds,health_expected_status,step_timeout_seconds,deployment_timeout_seconds,config_source,config_snapshot,application_config_json,notification_config_json) VALUES(?,'queued',?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`, projectID, trigger, snapshot.branch, commit.SHA, commit.Message, commit.Author, now, now, snapshot.healthEnabled, snapshot.healthURL, snapshot.healthInitial, snapshot.healthTimeout, snapshot.healthRetries, snapshot.healthInterval, snapshot.healthExpected, snapshot.stepTimeout, snapshot.deploymentTimeout, snapshot.configSource, snapshot.configSnapshot, snapshot.applicationJSON, snapshot.notificationJSON)
 	if err != nil {
 		return Deployment{}, err
 	}

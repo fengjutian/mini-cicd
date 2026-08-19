@@ -77,3 +77,24 @@ status and the latest bounded application logs. Docker Compose uses `ps` and
 `logs`, systemd uses `systemctl --user show` and `journalctl --user-unit`, and
 PM2 uses `describe` and non-streaming `logs`. Commands time out after 15 seconds,
 return at most 1 MiB, and log requests are limited to 2,000 lines.
+
+## Deployment notifications
+
+Webhook endpoints must be stored as project Secrets; URLs are never committed to
+the repository configuration. For example, create a Secret named
+`DEPLOY_WEBHOOK_URL`, then configure:
+
+```yaml
+notifications:
+  - name: operations
+    type: webhook
+    urlVariable: DEPLOY_WEBHOOK_URL
+    events: [succeeded, failed, cancelled, timed_out]
+```
+
+The JSON payload contains `event`, `notification`, `deploymentId`, `projectId`,
+`projectName`, `status`, `commitSha`, and `errorSummary`. Notification jobs are
+created transactionally when a deployment becomes terminal. Failed requests are
+retried with exponential backoff up to five attempts and survive service
+restarts. Consumers should use `deploymentId` and `notification` as an
+idempotency key because a timed-out response can be retried.

@@ -70,7 +70,43 @@ func Migrate(db *sql.DB) error {
 			return err
 		}
 	}
+	if version < 8 {
+		if err := applyV8(db); err != nil {
+			return err
+		}
+	}
 	return nil
+}
+
+func applyV8(db *sql.DB) error {
+	if err := ensureColumn(db, "deployments", "notification_config_json", "TEXT NOT NULL DEFAULT '[]'"); err != nil {
+		return err
+	}
+	const schema = `
+CREATE TABLE IF NOT EXISTS notification_deliveries (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    deployment_id INTEGER NOT NULL UNIQUE REFERENCES deployments(id) ON DELETE CASCADE,
+    status TEXT NOT NULL DEFAULT 'pending' CHECK(status IN ('pending','delivering','delivered','failed')),
+    attempts INTEGER NOT NULL DEFAULT 0,
+    next_attempt_at TEXT NOT NULL,
+    last_error TEXT NOT NULL DEFAULT '',
+    delivered_at TEXT,
+    created_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_notification_pending ON notification_deliveries(status,next_attempt_at,id);
+CREATE TRIGGER IF NOT EXISTS enqueue_deployment_notification
+AFTER UPDATE OF status ON deployments
+WHEN OLD.status NOT IN ('succeeded','failed','cancelled','timed_out')
+ AND NEW.status IN ('succeeded','failed','cancelled','timed_out')
+ AND NEW.notification_config_json <> '[]'
+BEGIN
+  INSERT OR IGNORE INTO notification_deliveries(deployment_id,next_attempt_at,created_at)
+  VALUES(NEW.id,CURRENT_TIMESTAMP,CURRENT_TIMESTAMP);
+END;`
+	if _, err := db.Exec(schema); err != nil {
+		return err
+	}
+	return recordMigration(db, 8)
 }
 
 func applyV7(db *sql.DB) error {
