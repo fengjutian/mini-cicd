@@ -26,6 +26,12 @@ type Config struct {
 	} `yaml:"timeouts" json:"timeouts"`
 	Application   Application    `yaml:"application" json:"application"`
 	Notifications []Notification `yaml:"notifications" json:"notifications"`
+	Artifacts     ArtifactConfig `yaml:"artifacts" json:"artifacts"`
+}
+
+type ArtifactConfig struct {
+	Paths     []string `yaml:"paths" json:"paths"`
+	Retention int      `yaml:"retention" json:"retention"`
 }
 
 type Notification struct {
@@ -58,6 +64,7 @@ type Resolved struct {
 	StepTimeout, DeploymentTimeout time.Duration
 	Application                    Application
 	Notifications                  []Notification
+	Artifacts                      ArtifactConfig
 }
 
 var safeName = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9_.@-]*$`)
@@ -77,6 +84,7 @@ func Parse(raw []byte, defaults Resolved) (Resolved, error) {
 	out.Deploy = convert(cfg.Pipeline.Deploy)
 	out.Application = cfg.Application
 	out.Notifications = cfg.Notifications
+	out.Artifacts = cfg.Artifacts
 	if cfg.Timeouts.Step != "" {
 		d, err := time.ParseDuration(cfg.Timeouts.Step)
 		if err != nil || d <= 0 {
@@ -116,7 +124,39 @@ func Parse(raw []byte, defaults Resolved) (Resolved, error) {
 	if err := validateNotifications(out.Notifications); err != nil {
 		return Resolved{}, err
 	}
+	if err := validateArtifacts(&out.Artifacts); err != nil {
+		return Resolved{}, err
+	}
 	return out, nil
+}
+
+func validateArtifacts(cfg *ArtifactConfig) error {
+	if len(cfg.Paths) == 0 {
+		if cfg.Retention != 0 {
+			return errors.New("artifacts.retention requires artifact paths")
+		}
+		return nil
+	}
+	if cfg.Retention == 0 {
+		cfg.Retention = 5
+	}
+	if cfg.Retention < 1 || cfg.Retention > 50 {
+		return errors.New("artifacts.retention must be between 1 and 50")
+	}
+	seen := map[string]bool{}
+	for i, p := range cfg.Paths {
+		p = strings.TrimSpace(p)
+		if err := safeRelativePath(p); err != nil {
+			return fmt.Errorf("artifacts.paths: %w", err)
+		}
+		clean := path.Clean(strings.ReplaceAll(p, `\`, "/"))
+		if seen[clean] {
+			return errors.New("artifacts.paths contains a duplicate")
+		}
+		seen[clean] = true
+		cfg.Paths[i] = clean
+	}
+	return nil
 }
 
 func validateNotifications(items []Notification) error {

@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"context"
 	"database/sql"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -14,9 +15,11 @@ import (
 	"sync"
 	"time"
 
+	"github.com/charlesfeng/mini-cicd/apps/server/internal/artifact"
 	"github.com/charlesfeng/mini-cicd/apps/server/internal/deployment"
 	"github.com/charlesfeng/mini-cicd/apps/server/internal/gitops"
 	"github.com/charlesfeng/mini-cicd/apps/server/internal/logstore"
+	"github.com/charlesfeng/mini-cicd/apps/server/internal/pipelineconfig"
 	"github.com/charlesfeng/mini-cicd/apps/server/internal/procenv"
 	"github.com/charlesfeng/mini-cicd/apps/server/internal/runneripc"
 	"github.com/charlesfeng/mini-cicd/apps/server/internal/secret"
@@ -24,27 +27,29 @@ import (
 )
 
 type Manager struct {
-	db       *sql.DB
-	deps     *deployment.Service
-	git      *gitops.Git
-	spaces   *workspace.Manager
-	logs     *logstore.Store
-	box      *secret.Box
-	shell    string
-	parallel int
-	grace    time.Duration
-	logger   *slog.Logger
-	wake     chan struct{}
-	endpoint string
-	wg       sync.WaitGroup
-	ctx      context.Context
-	cancel   context.CancelFunc
+	db        *sql.DB
+	deps      *deployment.Service
+	git       *gitops.Git
+	spaces    *workspace.Manager
+	logs      *logstore.Store
+	box       *secret.Box
+	shell     string
+	parallel  int
+	grace     time.Duration
+	logger    *slog.Logger
+	wake      chan struct{}
+	endpoint  string
+	artifacts *artifact.Store
+	wg        sync.WaitGroup
+	ctx       context.Context
+	cancel    context.CancelFunc
 
 	inflightMu sync.Mutex
 	inflight   map[int64]context.CancelFunc
 }
 
-func (m *Manager) UseRemote(endpoint string) *Manager { m.endpoint = endpoint; return m }
+func (m *Manager) UseRemote(endpoint string) *Manager          { m.endpoint = endpoint; return m }
+func (m *Manager) UseArtifacts(store *artifact.Store) *Manager { m.artifacts = store; return m }
 
 // registerInflight stores the cancel function for a running deployment so
 // that an external Cancel request can short-circuit the 250ms poll loop.
@@ -72,9 +77,9 @@ func (m *Manager) CancelByID(id int64) {
 }
 
 type step struct {
-	id           int64
-	command, dir string
-	timeout      time.Duration
+	id                  int64
+	command, dir, phase string
+	timeout             time.Duration
 }
 
 func New(db *sql.DB, deps *deployment.Service, git *gitops.Git, spaces *workspace.Manager, logs *logstore.Store, box *secret.Box, shell string, parallel int, grace time.Duration, logger *slog.Logger) *Manager {
@@ -155,8 +160,14 @@ func (m *Manager) execute(d deployment.Deployment) {
 func (m *Manager) run(d deployment.Deployment) error {
 	var repo string
 	var stepSeconds, deploySeconds int
-	if err := m.db.QueryRow(`SELECT p.repository_url,d.step_timeout_seconds,d.deployment_timeout_seconds FROM deployments d JOIN projects p ON p.id=d.project_id WHERE d.id=?`, d.ID).Scan(&repo, &stepSeconds, &deploySeconds); err != nil {
+	var artifactRaw string
+	var artifactSource sql.NullInt64
+	if err := m.db.QueryRow(`SELECT p.repository_url,d.step_timeout_seconds,d.deployment_timeout_seconds,d.artifact_config_json,d.artifact_source_deployment_id FROM deployments d JOIN projects p ON p.id=d.project_id WHERE d.id=?`, d.ID).Scan(&repo, &stepSeconds, &deploySeconds, &artifactRaw, &artifactSource); err != nil {
 		return err
+	}
+	var artifactConfig pipelineconfig.ArtifactConfig
+	if err := json.Unmarshal([]byte(artifactRaw), &artifactConfig); err != nil {
+		return errors.New("invalid artifact configuration snapshot")
 	}
 	ctx, cancel := context.WithTimeout(m.ctx, time.Duration(deploySeconds)*time.Second)
 	defer cancel()
@@ -209,6 +220,19 @@ func (m *Manager) run(d deployment.Deployment) error {
 		}
 		return err
 	}
+	if artifactSource.Valid {
+		if m.artifacts == nil {
+			return errors.New("artifact store is unavailable")
+		}
+		var sourcePath string
+		if err = m.db.QueryRow(`SELECT COALESCE(artifact_path,'') FROM deployments WHERE id=? AND status='succeeded'`, artifactSource.Int64).Scan(&sourcePath); err != nil {
+			return err
+		}
+		if err = m.artifacts.Restore(sourcePath, space, artifactConfig); err != nil {
+			return err
+		}
+		_ = writer.WriteStep(0, "system", fmt.Sprintf("restored artifacts from deployment #%d", artifactSource.Int64))
+	}
 	if m.endpoint != "" {
 		if err = workspace.MakeShared(space); err != nil {
 			return fmt.Errorf("prepare isolated runner workspace: %w", err)
@@ -221,14 +245,14 @@ func (m *Manager) run(d deployment.Deployment) error {
 	if changed, _ := res.RowsAffected(); changed != 1 {
 		return context.Canceled
 	}
-	rows, err := m.db.Query(`SELECT id,command_text,working_directory FROM deployment_steps WHERE deployment_id=? ORDER BY sequence`, d.ID)
+	rows, err := m.db.Query(`SELECT id,command_text,working_directory,phase FROM deployment_steps WHERE deployment_id=? ORDER BY sequence`, d.ID)
 	if err != nil {
 		return err
 	}
 	var steps []step
 	for rows.Next() {
 		var x step
-		if err = rows.Scan(&x.id, &x.command, &x.dir); err != nil {
+		if err = rows.Scan(&x.id, &x.command, &x.dir, &x.phase); err != nil {
 			rows.Close()
 			return err
 		}
@@ -236,7 +260,14 @@ func (m *Manager) run(d deployment.Deployment) error {
 		steps = append(steps, x)
 	}
 	rows.Close()
+	artifactsSaved := artifactSource.Valid
 	for _, x := range steps {
+		if x.phase == "deploy" && !artifactsSaved && len(artifactConfig.Paths) > 0 {
+			if err = m.saveArtifacts(d, space, artifactConfig, writer); err != nil {
+				return err
+			}
+			artifactsSaved = true
+		}
 		if cancelled, _ := m.cancelled(d.ID); cancelled {
 			return context.Canceled
 		}
@@ -246,6 +277,11 @@ func (m *Manager) run(d deployment.Deployment) error {
 		}
 		if err = m.runStep(ctx, d.ID, x, dir, env, writer); err != nil {
 			_ = writer.WriteStep(x.id, "system", "step failed: "+err.Error())
+			return err
+		}
+	}
+	if !artifactsSaved && len(artifactConfig.Paths) > 0 {
+		if err = m.saveArtifacts(d, space, artifactConfig, writer); err != nil {
 			return err
 		}
 	}
@@ -259,6 +295,20 @@ func (m *Manager) run(d deployment.Deployment) error {
 		return err
 	}
 	return writer.WriteStep(0, "system", "deployment succeeded")
+}
+
+func (m *Manager) saveArtifacts(d deployment.Deployment, space string, cfg pipelineconfig.ArtifactConfig, w *logstore.Writer) error {
+	if m.artifacts == nil {
+		return errors.New("artifact store is unavailable")
+	}
+	path, err := m.artifacts.Save(d.ProjectID, d.ID, space, cfg)
+	if err != nil {
+		return err
+	}
+	if _, err = m.db.Exec(`UPDATE deployments SET artifact_path=? WHERE id=?`, path, d.ID); err != nil {
+		return err
+	}
+	return w.WriteStep(0, "system", "saved versioned artifacts")
 }
 
 func (m *Manager) runHealth(ctx context.Context, id int64, w *logstore.Writer) error {

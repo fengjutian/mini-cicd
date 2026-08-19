@@ -75,7 +75,26 @@ func Migrate(db *sql.DB) error {
 			return err
 		}
 	}
+	if version < 9 {
+		if err := applyV9(db); err != nil {
+			return err
+		}
+	}
 	return nil
+}
+
+func applyV9(db *sql.DB) error {
+	columns := []struct{ table, name, definition string }{
+		{"deployments", "artifact_config_json", "TEXT NOT NULL DEFAULT '{}'"},
+		{"deployments", "artifact_path", "TEXT"},
+		{"deployments", "artifact_source_deployment_id", "INTEGER REFERENCES deployments(id)"},
+	}
+	for _, c := range columns {
+		if err := ensureColumn(db, c.table, c.name, c.definition); err != nil {
+			return err
+		}
+	}
+	return recordMigration(db, 9)
 }
 
 func applyV8(db *sql.DB) error {

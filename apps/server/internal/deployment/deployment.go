@@ -31,6 +31,7 @@ type projectSnapshot struct {
 	configSource, configSnapshot                                   string
 	applicationJSON                                                string
 	notificationJSON                                               string
+	artifactJSON                                                   string
 }
 type Step struct {
 	ID               int64   `json:"id"`
@@ -49,21 +50,23 @@ type Service struct {
 	resolver Resolver
 }
 type Deployment struct {
-	ID             int64   `json:"id"`
-	ProjectID      string  `json:"projectId"`
-	Status         string  `json:"status"`
-	TriggerType    string  `json:"triggerType"`
-	Branch         string  `json:"branch"`
-	CommitSHA      string  `json:"commitSha"`
-	CommitMessage  string  `json:"commitMessage"`
-	CommitAuthor   string  `json:"commitAuthor"`
-	ErrorSummary   string  `json:"errorSummary"`
-	ConfigSource   string  `json:"configSource"`
-	ConfigSnapshot string  `json:"configSnapshot,omitempty"`
-	QueuedAt       *string `json:"queuedAt"`
-	StartedAt      *string `json:"startedAt"`
-	FinishedAt     *string `json:"finishedAt"`
-	CreatedAt      string  `json:"createdAt"`
+	ID                         int64   `json:"id"`
+	ProjectID                  string  `json:"projectId"`
+	Status                     string  `json:"status"`
+	TriggerType                string  `json:"triggerType"`
+	Branch                     string  `json:"branch"`
+	CommitSHA                  string  `json:"commitSha"`
+	CommitMessage              string  `json:"commitMessage"`
+	CommitAuthor               string  `json:"commitAuthor"`
+	ErrorSummary               string  `json:"errorSummary"`
+	ConfigSource               string  `json:"configSource"`
+	ConfigSnapshot             string  `json:"configSnapshot,omitempty"`
+	HasArtifacts               bool    `json:"hasArtifacts"`
+	ArtifactSourceDeploymentID *int64  `json:"artifactSourceDeploymentId,omitempty"`
+	QueuedAt                   *string `json:"queuedAt"`
+	StartedAt                  *string `json:"startedAt"`
+	FinishedAt                 *string `json:"finishedAt"`
+	CreatedAt                  string  `json:"createdAt"`
 }
 type Claimed struct {
 	Deployment
@@ -115,6 +118,43 @@ func (s *Service) CreateAtCommit(ctx context.Context, projectID, trigger, sha st
 	return s.createResolved(ctx, projectID, trigger, snapshot, commit)
 }
 
+// Rollback queues only the deploy phase using a successful deployment's
+// immutable artifact and configuration snapshots. It deliberately skips Git
+// resolution and build steps.
+func (s *Service) Rollback(ctx context.Context, sourceID int64) (Deployment, error) {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return Deployment{}, err
+	}
+	defer tx.Rollback()
+	var projectID, status, artifactPath string
+	if err = tx.QueryRowContext(ctx, `SELECT project_id,status,COALESCE(artifact_path,'') FROM deployments WHERE id=?`, sourceID).Scan(&projectID, &status, &artifactPath); err != nil {
+		return Deployment{}, err
+	}
+	if status != "succeeded" || artifactPath == "" {
+		return Deployment{}, errors.New("rollback requires a successful deployment with saved artifacts")
+	}
+	now := time.Now().UTC().Format(time.RFC3339Nano)
+	res, err := tx.ExecContext(ctx, `INSERT INTO deployments(project_id,status,trigger_type,branch,commit_sha,commit_message,commit_author,queued_at,created_at,health_enabled,health_url,health_initial_delay_seconds,health_timeout_seconds,health_retries,health_retry_interval_seconds,health_expected_status,step_timeout_seconds,deployment_timeout_seconds,config_source,config_snapshot,application_config_json,notification_config_json,artifact_config_json,artifact_source_deployment_id) SELECT project_id,'queued','redeploy',branch,commit_sha,commit_message,commit_author,?,?,health_enabled,health_url,health_initial_delay_seconds,health_timeout_seconds,health_retries,health_retry_interval_seconds,health_expected_status,step_timeout_seconds,deployment_timeout_seconds,config_source,config_snapshot,application_config_json,notification_config_json,artifact_config_json,? FROM deployments WHERE id=?`, now, now, sourceID, sourceID)
+	if err != nil {
+		return Deployment{}, err
+	}
+	id, err := res.LastInsertId()
+	if err != nil {
+		return Deployment{}, err
+	}
+	if _, err = tx.ExecContext(ctx, `INSERT INTO deployment_variables(deployment_id,name,is_secret,plain_value,cipher_value,source_version) SELECT ?,name,is_secret,plain_value,cipher_value,source_version FROM deployment_variables WHERE deployment_id=?`, id, sourceID); err != nil {
+		return Deployment{}, err
+	}
+	if _, err = tx.ExecContext(ctx, `INSERT INTO deployment_steps(deployment_id,sequence,phase,name,command_text,working_directory,status) SELECT ?,ROW_NUMBER() OVER(ORDER BY sequence),'deploy',name,command_text,working_directory,'pending' FROM deployment_steps WHERE deployment_id=? AND phase='deploy' ORDER BY sequence`, id, sourceID); err != nil {
+		return Deployment{}, err
+	}
+	if err = tx.Commit(); err != nil {
+		return Deployment{}, err
+	}
+	return s.Get(ctx, id)
+}
+
 func (s *Service) projectSnapshot(ctx context.Context, projectID string) (projectSnapshot, error) {
 	var p projectSnapshot
 	err := s.db.QueryRowContext(ctx, `SELECT repository_url,branch,build_steps_json,deploy_steps_json,health_enabled,health_url,health_initial_delay_seconds,health_timeout_seconds,health_retries,health_retry_interval_seconds,health_expected_status,step_timeout_seconds,deployment_timeout_seconds FROM projects WHERE id=? AND archived_at IS NULL`, projectID).Scan(&p.repo, &p.branch, &p.buildJSON, &p.deployJSON, &p.healthEnabled, &p.healthURL, &p.healthInitial, &p.healthTimeout, &p.healthRetries, &p.healthInterval, &p.healthExpected, &p.stepTimeout, &p.deploymentTimeout)
@@ -142,6 +182,8 @@ func (s *Service) createResolved(ctx context.Context, projectID, trigger string,
 			snapshot.applicationJSON = string(applicationRaw)
 			notificationRaw, _ := json.Marshal(resolved.Notifications)
 			snapshot.notificationJSON = string(notificationRaw)
+			artifactRaw, _ := json.Marshal(resolved.Artifacts)
+			snapshot.artifactJSON = string(artifactRaw)
 			snapshot.stepTimeout, snapshot.deploymentTimeout = int(resolved.StepTimeout/time.Second), int(resolved.DeploymentTimeout/time.Second)
 			snapshot.configSource, snapshot.configSnapshot = "repository", string(raw)
 		} else if !errors.Is(readErr, os.ErrNotExist) {
@@ -160,7 +202,10 @@ func (s *Service) createResolved(ctx context.Context, projectID, trigger string,
 	if snapshot.notificationJSON == "" {
 		snapshot.notificationJSON = "[]"
 	}
-	res, err := tx.ExecContext(ctx, `INSERT INTO deployments(project_id,status,trigger_type,branch,commit_sha,commit_message,commit_author,queued_at,created_at,health_enabled,health_url,health_initial_delay_seconds,health_timeout_seconds,health_retries,health_retry_interval_seconds,health_expected_status,step_timeout_seconds,deployment_timeout_seconds,config_source,config_snapshot,application_config_json,notification_config_json) VALUES(?,'queued',?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`, projectID, trigger, snapshot.branch, commit.SHA, commit.Message, commit.Author, now, now, snapshot.healthEnabled, snapshot.healthURL, snapshot.healthInitial, snapshot.healthTimeout, snapshot.healthRetries, snapshot.healthInterval, snapshot.healthExpected, snapshot.stepTimeout, snapshot.deploymentTimeout, snapshot.configSource, snapshot.configSnapshot, snapshot.applicationJSON, snapshot.notificationJSON)
+	if snapshot.artifactJSON == "" {
+		snapshot.artifactJSON = "{}"
+	}
+	res, err := tx.ExecContext(ctx, `INSERT INTO deployments(project_id,status,trigger_type,branch,commit_sha,commit_message,commit_author,queued_at,created_at,health_enabled,health_url,health_initial_delay_seconds,health_timeout_seconds,health_retries,health_retry_interval_seconds,health_expected_status,step_timeout_seconds,deployment_timeout_seconds,config_source,config_snapshot,application_config_json,notification_config_json,artifact_config_json) VALUES(?,'queued',?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`, projectID, trigger, snapshot.branch, commit.SHA, commit.Message, commit.Author, now, now, snapshot.healthEnabled, snapshot.healthURL, snapshot.healthInitial, snapshot.healthTimeout, snapshot.healthRetries, snapshot.healthInterval, snapshot.healthExpected, snapshot.stepTimeout, snapshot.deploymentTimeout, snapshot.configSource, snapshot.configSnapshot, snapshot.applicationJSON, snapshot.notificationJSON, snapshot.artifactJSON)
 	if err != nil {
 		return Deployment{}, err
 	}
@@ -208,7 +253,7 @@ func (s *Service) Steps(ctx context.Context, id int64) ([]Step, error) {
 
 func (s *Service) Get(ctx context.Context, id int64) (Deployment, error) {
 	var d Deployment
-	err := s.db.QueryRowContext(ctx, selectDeployment+` WHERE id=?`, id).Scan(&d.ID, &d.ProjectID, &d.Status, &d.TriggerType, &d.Branch, &d.CommitSHA, &d.CommitMessage, &d.CommitAuthor, &d.ErrorSummary, &d.ConfigSource, &d.ConfigSnapshot, &d.QueuedAt, &d.StartedAt, &d.FinishedAt, &d.CreatedAt)
+	err := s.db.QueryRowContext(ctx, selectDeployment+` WHERE id=?`, id).Scan(&d.ID, &d.ProjectID, &d.Status, &d.TriggerType, &d.Branch, &d.CommitSHA, &d.CommitMessage, &d.CommitAuthor, &d.ErrorSummary, &d.ConfigSource, &d.ConfigSnapshot, &d.HasArtifacts, &d.ArtifactSourceDeploymentID, &d.QueuedAt, &d.StartedAt, &d.FinishedAt, &d.CreatedAt)
 	return d, err
 }
 func (s *Service) List(ctx context.Context, projectID string) ([]Deployment, error) {
@@ -220,7 +265,7 @@ func (s *Service) List(ctx context.Context, projectID string) ([]Deployment, err
 	out := []Deployment{}
 	for rows.Next() {
 		var d Deployment
-		if err = rows.Scan(&d.ID, &d.ProjectID, &d.Status, &d.TriggerType, &d.Branch, &d.CommitSHA, &d.CommitMessage, &d.CommitAuthor, &d.ErrorSummary, &d.ConfigSource, &d.ConfigSnapshot, &d.QueuedAt, &d.StartedAt, &d.FinishedAt, &d.CreatedAt); err != nil {
+		if err = rows.Scan(&d.ID, &d.ProjectID, &d.Status, &d.TriggerType, &d.Branch, &d.CommitSHA, &d.CommitMessage, &d.CommitAuthor, &d.ErrorSummary, &d.ConfigSource, &d.ConfigSnapshot, &d.HasArtifacts, &d.ArtifactSourceDeploymentID, &d.QueuedAt, &d.StartedAt, &d.FinishedAt, &d.CreatedAt); err != nil {
 			return nil, err
 		}
 		out = append(out, d)
@@ -312,4 +357,4 @@ func (s *Service) Finish(ctx context.Context, id int64, status, message string) 
 	return tx.Commit()
 }
 
-const selectDeployment = `SELECT id,project_id,status,trigger_type,branch,COALESCE(commit_sha,''),commit_message,commit_author,error_summary,config_source,config_snapshot,queued_at,started_at,finished_at,created_at FROM deployments`
+const selectDeployment = `SELECT id,project_id,status,trigger_type,branch,COALESCE(commit_sha,''),commit_message,commit_author,error_summary,config_source,config_snapshot,artifact_path IS NOT NULL,artifact_source_deployment_id,queued_at,started_at,finished_at,created_at FROM deployments`

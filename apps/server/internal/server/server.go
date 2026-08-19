@@ -19,6 +19,7 @@ import (
 	"time"
 
 	"github.com/charlesfeng/mini-cicd/apps/server/internal/application"
+	"github.com/charlesfeng/mini-cicd/apps/server/internal/artifact"
 	"github.com/charlesfeng/mini-cicd/apps/server/internal/auth"
 	"github.com/charlesfeng/mini-cicd/apps/server/internal/config"
 	"github.com/charlesfeng/mini-cicd/apps/server/internal/deployment"
@@ -100,9 +101,13 @@ func New(db *sql.DB, cfg config.Config, logger *slog.Logger) (*Server, error) {
 	if err != nil {
 		return nil, err
 	}
+	artifacts, err := artifact.New(cfg.DataDir)
+	if err != nil {
+		return nil, err
+	}
 	s := &Server{db: db, cfg: cfg, logger: logger, limiter: newLoginLimiter(), webhookLimiter: newRequestLimiter(120), projects: project.New(db, box), applications: application.New(db), deps: deps, logs: logs, box: box}
 	s.webhookCtx, s.webhookCancel = context.WithCancel(context.Background())
-	s.runner = runner.New(db, deps, git, spaces, logs, box, cfg.Shell, cfg.GlobalParallel, cfg.CancelGrace, logger).UseRemote(cfg.RunnerEndpoint)
+	s.runner = runner.New(db, deps, git, spaces, logs, box, cfg.Shell, cfg.GlobalParallel, cfg.CancelGrace, logger).UseRemote(cfg.RunnerEndpoint).UseArtifacts(artifacts)
 	s.maintenance = maintenance.New(db, logs, spaces, cfg.CleanupInterval, cfg.WorkspaceRetention, cfg.LogRetention, cfg.DeploymentRetention, logger).ConfigureBackups(cfg.DatabasePath, filepath.Join(cfg.DataDir, "backups"), cfg.BackupInterval, cfg.BackupRetention).ConfigureAudit(cfg.AuditRetention, cfg.AuditMaxEvents)
 	s.notifications = notification.New(db, box, logger)
 	mux := http.NewServeMux()
@@ -135,6 +140,7 @@ func New(db *sql.DB, cfg config.Config, logger *slog.Logger) (*Server, error) {
 	mux.HandleFunc("GET /api/v1/deployments/{id}/steps", s.requireAuth(s.deploymentSteps))
 	mux.HandleFunc("POST /api/v1/deployments/{id}/cancel", s.requireAuth(s.cancelDeployment))
 	mux.HandleFunc("POST /api/v1/deployments/{id}/redeploy", s.requireAuth(s.redeployDeployment))
+	mux.HandleFunc("POST /api/v1/deployments/{id}/rollback", s.requireAuth(s.rollbackDeployment))
 	mux.HandleFunc("GET /api/v1/deployments/{id}/logs", s.requireAuth(s.deploymentLogs))
 	mux.HandleFunc("GET /healthz", s.health)
 	mux.HandleFunc("POST /api/v1/webhooks/{projectID}/{provider}", s.webhook)

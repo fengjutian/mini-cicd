@@ -68,6 +68,19 @@ func (s *Server) redeployDeployment(w http.ResponseWriter, r *http.Request) {
 	s.runner.Wake()
 	writeJSON(w, http.StatusCreated, d)
 }
+func (s *Server) rollbackDeployment(w http.ResponseWriter, r *http.Request) {
+	id, ok := deploymentID(w, r)
+	if !ok {
+		return
+	}
+	d, err := s.deps.Rollback(r.Context(), id)
+	if err != nil {
+		s.deploymentError(w, err)
+		return
+	}
+	s.runner.Wake()
+	writeJSON(w, http.StatusCreated, d)
+}
 func (s *Server) cancelDeployment(w http.ResponseWriter, r *http.Request) {
 	id, ok := deploymentID(w, r)
 	if !ok {
