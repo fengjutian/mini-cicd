@@ -152,6 +152,8 @@ func New(db *sql.DB, cfg config.Config, logger *slog.Logger) (*Server, error) {
 	mux.HandleFunc("POST /api/v1/projects/{id}/commit-status-deliveries/{deliveryID}/retry", s.requireAuth(s.retryCommitStatusDelivery))
 	mux.HandleFunc("GET /api/v1/deployments/{id}", s.requireAuth(s.getDeployment))
 	mux.HandleFunc("GET /api/v1/deployments/{id}/steps", s.requireAuth(s.deploymentSteps))
+	mux.HandleFunc("GET /api/v1/deployments/{id}/artifacts", s.requireAuth(s.artifactManifest))
+	mux.HandleFunc("GET /api/v1/deployments/{id}/artifacts/{path...}", s.requireAuth(s.downloadArtifact))
 	mux.HandleFunc("POST /api/v1/deployments/{id}/cancel", s.requireAuth(s.cancelDeployment))
 	mux.HandleFunc("POST /api/v1/deployments/{id}/redeploy", s.requireAuth(s.redeployDeployment))
 	mux.HandleFunc("POST /api/v1/deployments/{id}/rollback", s.requireAuth(s.rollbackDeployment))

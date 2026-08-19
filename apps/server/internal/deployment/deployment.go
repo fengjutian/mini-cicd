@@ -365,7 +365,7 @@ func (s *Service) Claim(ctx context.Context, runnerID string) (Deployment, bool,
 	defer tx.Rollback()
 	var id int64
 	var projectID string
-	err = tx.QueryRowContext(ctx, `SELECT d.id,d.project_id FROM deployments d WHERE d.status='queued' AND d.approval_status='approved' AND NOT EXISTS(SELECT 1 FROM project_locks l WHERE l.project_id=d.project_id) ORDER BY d.queued_at,d.id LIMIT 1`).Scan(&id, &projectID)
+	err = tx.QueryRowContext(ctx, `SELECT d.id,d.project_id FROM deployments d WHERE d.status='queued' AND d.approval_status='approved' AND NOT EXISTS(SELECT 1 FROM project_locks l WHERE l.project_id=d.project_id) ORDER BY d.priority DESC,d.queued_at,d.id LIMIT 1`).Scan(&id, &projectID)
 	if errors.Is(err, sql.ErrNoRows) {
 		return Deployment{}, false, nil
 	}

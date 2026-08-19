@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"regexp"
 	"strconv"
 	"time"
 )
@@ -14,11 +15,61 @@ func (s *Server) createDeployment(w http.ResponseWriter, r *http.Request) {
 	if environment == "" {
 		environment = "production"
 	}
+	var input struct {
+		Priority       int               `json:"priority"`
+		CancelPrevious bool              `json:"cancelPrevious"`
+		Parameters     map[string]string `json:"parameters"`
+	}
+	if r.ContentLength > 0 {
+		if err := decodeJSON(r, &input); err != nil {
+			writeError(w, http.StatusBadRequest, "invalid_request", err.Error())
+			return
+		}
+	}
+	if input.Priority < -100 || input.Priority > 100 || len(input.Parameters) > 20 {
+		writeError(w, http.StatusUnprocessableEntity, "invalid_deployment_options", "Priority must be between -100 and 100 and parameters are limited to 20.")
+		return
+	}
+	variable := regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*$`)
+	for name, value := range input.Parameters {
+		if !variable.MatchString(name) || len(value) > 4096 {
+			writeError(w, http.StatusUnprocessableEntity, "invalid_parameter", "Deployment parameter names or values are invalid.")
+			return
+		}
+	}
 	d, err := s.deps.CreateForEnvironment(r.Context(), r.PathValue("id"), "manual", environment)
 	if err != nil {
 		s.deploymentError(w, err)
 		return
 	}
+	raw, _ := json.Marshal(input.Parameters)
+	tx, err := s.db.BeginTx(r.Context(), nil)
+	if err != nil {
+		s.deploymentError(w, err)
+		return
+	}
+	defer tx.Rollback()
+	if _, err = tx.ExecContext(r.Context(), `UPDATE deployments SET priority=?,parameters_json=? WHERE id=?`, input.Priority, raw, d.ID); err != nil {
+		s.deploymentError(w, err)
+		return
+	}
+	for name, value := range input.Parameters {
+		if _, err = tx.ExecContext(r.Context(), `INSERT INTO deployment_variables(deployment_id,name,is_secret,plain_value,source_version) VALUES(?,?,0,?,0) ON CONFLICT(deployment_id,name) DO UPDATE SET is_secret=0,plain_value=excluded.plain_value,cipher_value=NULL,source_version=0`, d.ID, name, value); err != nil {
+			s.deploymentError(w, err)
+			return
+		}
+	}
+	if input.CancelPrevious {
+		if _, err = tx.ExecContext(r.Context(), `UPDATE deployments SET status='cancelled',finished_at=?,error_summary='superseded by newer deployment' WHERE project_id=? AND id<>? AND status='queued'`, time.Now().UTC().Format(time.RFC3339Nano), d.ProjectID, d.ID); err != nil {
+			s.deploymentError(w, err)
+			return
+		}
+	}
+	if err = tx.Commit(); err != nil {
+		s.deploymentError(w, err)
+		return
+	}
+	d, _ = s.deps.Get(r.Context(), d.ID)
 	s.runner.Wake()
 	writeJSON(w, http.StatusCreated, d)
 }

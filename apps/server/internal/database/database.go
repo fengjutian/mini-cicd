@@ -95,7 +95,24 @@ func Migrate(db *sql.DB) error {
 			return err
 		}
 	}
+	if version < 13 {
+		if err := applyV13(db); err != nil {
+			return err
+		}
+	}
 	return nil
+}
+
+func applyV13(db *sql.DB) error {
+	for _, c := range []struct{ name, def string }{{"priority", "INTEGER NOT NULL DEFAULT 0"}, {"parameters_json", "TEXT NOT NULL DEFAULT '{}'"}} {
+		if err := ensureColumn(db, "deployments", c.name, c.def); err != nil {
+			return err
+		}
+	}
+	if _, err := db.Exec(`CREATE INDEX IF NOT EXISTS idx_deployments_queue_priority ON deployments(status,approval_status,priority DESC,queued_at,id)`); err != nil {
+		return err
+	}
+	return recordMigration(db, 13)
 }
 
 func applyV12(db *sql.DB) error {
