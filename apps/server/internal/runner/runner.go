@@ -260,7 +260,7 @@ func (m *Manager) run(d deployment.Deployment) error {
 		steps = append(steps, x)
 	}
 	rows.Close()
-	artifactsSaved := artifactSource.Valid
+	artifactsSaved := false
 	for _, x := range steps {
 		if x.phase == "deploy" && !artifactsSaved && len(artifactConfig.Paths) > 0 {
 			if err = m.saveArtifacts(d, space, artifactConfig, writer); err != nil {
@@ -308,7 +308,41 @@ func (m *Manager) saveArtifacts(d deployment.Deployment, space string, cfg pipel
 	if _, err = m.db.Exec(`UPDATE deployments SET artifact_path=? WHERE id=?`, path, d.ID); err != nil {
 		return err
 	}
+	if err = m.pruneArtifacts(d.ProjectID, cfg.Retention); err != nil {
+		return err
+	}
 	return w.WriteStep(0, "system", "saved versioned artifacts")
+}
+
+func (m *Manager) pruneArtifacts(projectID string, retention int) error {
+	if retention < 1 {
+		return nil
+	}
+	rows, err := m.db.Query(`SELECT id FROM deployments d WHERE project_id=? AND artifact_path IS NOT NULL AND NOT EXISTS(SELECT 1 FROM deployments active WHERE active.artifact_source_deployment_id=d.id AND active.status IN ('queued','preparing','running','cancelling')) ORDER BY id DESC LIMIT -1 OFFSET ?`, projectID, retention)
+	if err != nil {
+		return err
+	}
+	defer rows.Close()
+	var ids []int64
+	for rows.Next() {
+		var id int64
+		if err = rows.Scan(&id); err != nil {
+			return err
+		}
+		ids = append(ids, id)
+	}
+	if err = rows.Err(); err != nil {
+		return err
+	}
+	for _, id := range ids {
+		if err = m.artifacts.Remove(projectID, id); err != nil {
+			return err
+		}
+		if _, err = m.db.Exec(`UPDATE deployments SET artifact_path=NULL WHERE id=?`, id); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 func (m *Manager) runHealth(ctx context.Context, id int64, w *logstore.Writer) error {

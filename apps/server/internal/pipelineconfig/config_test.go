@@ -67,3 +67,14 @@ func TestNotificationConfig(t *testing.T) {
 		t.Fatalf("unexpected notifications: %#v", got.Notifications)
 	}
 }
+
+func TestArtifactConfig(t *testing.T) {
+	raw := []byte("version: 1\npipeline:\n  build: [{name: x, command: y}]\nartifacts:\n  paths: [dist, backend/bin]\n")
+	got, err := Parse(raw, Resolved{StepTimeout: time.Minute, DeploymentTimeout: time.Hour})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Artifacts.Retention != 5 || len(got.Artifacts.Paths) != 2 {
+		t.Fatalf("artifacts: %#v", got.Artifacts)
+	}
+}

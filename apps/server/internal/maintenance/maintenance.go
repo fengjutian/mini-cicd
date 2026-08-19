@@ -230,7 +230,7 @@ func safeColumnName(name string) bool {
 	}
 }
 func (m *Manager) pruneDeployments(ctx context.Context) error {
-	rows, err := m.db.QueryContext(ctx, `SELECT id,project_id FROM (SELECT id,project_id,status,ROW_NUMBER() OVER(PARTITION BY project_id ORDER BY id DESC) AS rn FROM deployments) WHERE rn>? AND status IN ('succeeded','failed','cancelled','timed_out')`, m.deploymentRetention)
+	rows, err := m.db.QueryContext(ctx, `SELECT ranked.id,ranked.project_id FROM (SELECT id,project_id,status,ROW_NUMBER() OVER(PARTITION BY project_id ORDER BY id DESC) AS rn FROM deployments) ranked WHERE ranked.rn>? AND ranked.status IN ('succeeded','failed','cancelled','timed_out') AND NOT EXISTS(SELECT 1 FROM deployments child WHERE child.artifact_source_deployment_id=ranked.id)`, m.deploymentRetention)
 	if err != nil {
 		return err
 	}

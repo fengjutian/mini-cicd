@@ -181,3 +181,29 @@ func TestCreateSnapshotsRepositoryPipeline(t *testing.T) {
 		t.Fatalf("timeouts were not snapshotted: %d %d", stepTimeout, deploymentTimeout)
 	}
 }
+
+func TestRollbackCopiesOnlyDeployPhaseAndSnapshots(t *testing.T) {
+	db := testDB(t)
+	insertProject(t, db, "one")
+	s := New(db, fakeResolver{})
+	source, err := s.Create(context.Background(), "one", "manual")
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, _ = db.Exec(`INSERT INTO deployment_steps(deployment_id,sequence,phase,name,command_text,status) VALUES(?,1,'build','build','make','succeeded'),(?,2,'deploy','deploy','publish','succeeded')`, source.ID, source.ID)
+	_, _ = db.Exec(`UPDATE deployments SET status='succeeded',artifact_path='saved/path',artifact_config_json='{"paths":["dist"],"retention":5}' WHERE id=?`, source.ID)
+	rolled, err := s.Rollback(context.Background(), source.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	steps, err := s.Steps(context.Background(), rolled.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(steps) != 1 || steps[0].Phase != "deploy" {
+		t.Fatalf("rollback steps: %#v", steps)
+	}
+	if rolled.ArtifactSourceDeploymentID == nil || *rolled.ArtifactSourceDeploymentID != source.ID {
+		t.Fatalf("source: %#v", rolled)
+	}
+}

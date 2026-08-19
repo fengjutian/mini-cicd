@@ -98,3 +98,26 @@ created transactionally when a deployment becomes terminal. Failed requests are
 retried with exponential backoff up to five attempts and survive service
 restarts. Consumers should use `deploymentId` and `notification` as an
 idempotency key because a timed-out response can be retried.
+
+## Versioned artifacts and fast rollback
+
+Declare repository-relative build outputs that must be preserved after a
+successful build:
+
+```yaml
+artifacts:
+  paths:
+    - dist
+    - backend/bin
+  retention: 5
+```
+
+Paths are copied without following symbolic links. A deployment with saved
+artifacts exposes a fast rollback action. Rollback checks out the immutable
+source commit, restores the saved paths, skips every Build Step, then runs the
+snapshotted Deploy Steps and health check. Variables, notifications, adapter
+settings, and timeouts also come from the source deployment snapshot.
+
+Retention is between 1 and 50 versions per project. Old versions are removed
+after a new snapshot is saved; an artifact currently referenced by an active
+rollback is not removed.

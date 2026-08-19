@@ -7,9 +7,9 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"strings"
 
 	"github.com/charlesfeng/mini-cicd/apps/server/internal/pipelineconfig"
-	"github.com/charlesfeng/mini-cicd/apps/server/internal/workspace"
 )
 
 type Store struct{ root string }
@@ -24,22 +24,22 @@ func New(dataDir string) (*Store, error) {
 func (s *Store) Path(projectID string, deploymentID int64) string {
 	return filepath.Join(s.root, projectID, fmt.Sprint(deploymentID))
 }
+func (s *Store) Remove(projectID string, deploymentID int64) error {
+	return os.RemoveAll(s.Path(projectID, deploymentID))
+}
 
 func (s *Store) Save(projectID string, deploymentID int64, source string, cfg pipelineconfig.ArtifactConfig) (string, error) {
 	if len(cfg.Paths) == 0 {
 		return "", nil
 	}
 	target := s.Path(projectID, deploymentID)
-	if err := os.RemoveAll(target); err != nil {
-		return "", err
-	}
 	if err := os.MkdirAll(target, 0o700); err != nil {
-		return "", err
+		return "", fmt.Errorf("create artifact directory: %w", err)
 	}
 	for _, name := range cfg.Paths {
-		from, err := workspace.Resolve(source, name)
+		from, err := safeJoin(source, name)
 		if err != nil {
-			return "", err
+			return "", fmt.Errorf("resolve artifact %s: %w", name, err)
 		}
 		if _, err = os.Lstat(from); err != nil {
 			return "", fmt.Errorf("artifact %s: %w", name, err)
@@ -58,8 +58,11 @@ func (s *Store) Restore(sourcePath, target string, cfg pipelineconfig.ArtifactCo
 	}
 	for _, name := range cfg.Paths {
 		from := filepath.Join(sourcePath, filepath.FromSlash(name))
-		to, err := workspace.Resolve(target, name)
+		to, err := safeJoin(target, name)
 		if err != nil {
+			return err
+		}
+		if err = os.RemoveAll(to); err != nil {
 			return err
 		}
 		if err = copyTree(from, to); err != nil {
@@ -67,6 +70,25 @@ func (s *Store) Restore(sourcePath, target string, cfg pipelineconfig.ArtifactCo
 		}
 	}
 	return nil
+}
+
+func safeJoin(root, relative string) (string, error) {
+	if filepath.IsAbs(relative) || filepath.VolumeName(relative) != "" {
+		return "", errors.New("artifact path must be relative")
+	}
+	rootAbs, err := filepath.Abs(root)
+	if err != nil {
+		return "", err
+	}
+	target, err := filepath.Abs(filepath.Join(rootAbs, filepath.Clean(relative)))
+	if err != nil {
+		return "", err
+	}
+	rel, err := filepath.Rel(rootAbs, target)
+	if err != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(os.PathSeparator)) || filepath.IsAbs(rel) {
+		return "", errors.New("artifact path escapes workspace")
+	}
+	return target, nil
 }
 
 func copyTree(from, to string) error {

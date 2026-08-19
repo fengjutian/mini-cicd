@@ -69,6 +69,8 @@ paths:
     post: {tags: [Deployments], summary: Idempotently request cancellation, parameters: [{$ref: '#/components/parameters/DeploymentId'}], responses: {'200': {description: Deployment state, content: {application/json: {schema: {$ref: '#/components/schemas/Deployment'}}}}}}
   /deployments/{deploymentId}/redeploy:
     post: {tags: [Deployments], summary: Queue the same immutable Commit SHA, parameters: [{$ref: '#/components/parameters/DeploymentId'}], responses: {'201': {description: New deployment, content: {application/json: {schema: {$ref: '#/components/schemas/Deployment'}}}}}}
+  /deployments/{deploymentId}/rollback:
+    post: {tags: [Deployments], summary: Restore saved artifacts and run only snapshotted deploy steps, parameters: [{$ref: '#/components/parameters/DeploymentId'}], responses: {'201': {description: Rollback queued, content: {application/json: {schema: {$ref: '#/components/schemas/Deployment'}}}}, '422': {$ref: '#/components/responses/Error'}}}
   /deployments/{deploymentId}/logs:
     get:
       tags: [Deployments]
