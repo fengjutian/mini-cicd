@@ -28,6 +28,7 @@ import (
 	"github.com/charlesfeng/mini-cicd/apps/server/internal/maintenance"
 	"github.com/charlesfeng/mini-cicd/apps/server/internal/notification"
 	"github.com/charlesfeng/mini-cicd/apps/server/internal/project"
+	"github.com/charlesfeng/mini-cicd/apps/server/internal/providerstatus"
 	"github.com/charlesfeng/mini-cicd/apps/server/internal/runner"
 	"github.com/charlesfeng/mini-cicd/apps/server/internal/secret"
 	"github.com/charlesfeng/mini-cicd/apps/server/internal/workspace"
@@ -67,6 +68,7 @@ type Server struct {
 	webhookWG      sync.WaitGroup
 	maintenance    *maintenance.Manager
 	notifications  *notification.Manager
+	providerStatus *providerstatus.Manager
 }
 
 func New(db *sql.DB, cfg config.Config, logger *slog.Logger) (*Server, error) {
@@ -110,6 +112,7 @@ func New(db *sql.DB, cfg config.Config, logger *slog.Logger) (*Server, error) {
 	s.runner = runner.New(db, deps, git, spaces, logs, box, cfg.Shell, cfg.GlobalParallel, cfg.CancelGrace, logger).UseRemote(cfg.RunnerEndpoint).UseArtifacts(artifacts)
 	s.maintenance = maintenance.New(db, logs, spaces, cfg.CleanupInterval, cfg.WorkspaceRetention, cfg.LogRetention, cfg.DeploymentRetention, logger).ConfigureBackups(cfg.DatabasePath, filepath.Join(cfg.DataDir, "backups"), cfg.BackupInterval, cfg.BackupRetention).ConfigureAudit(cfg.AuditRetention, cfg.AuditMaxEvents)
 	s.notifications = notification.New(db, box, logger)
+	s.providerStatus = providerstatus.New(db, box, logger)
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /api/v1/status", s.status)
 	mux.HandleFunc("POST /api/v1/setup", s.setup)
@@ -156,11 +159,13 @@ func New(db *sql.DB, cfg config.Config, logger *slog.Logger) (*Server, error) {
 	s.recoverWebhooks()
 	s.maintenance.Start()
 	s.notifications.Start()
+	s.providerStatus.Start()
 	return s, nil
 }
 
 func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) { s.handler.ServeHTTP(w, r) }
 func (s *Server) Close() {
+	s.providerStatus.Stop()
 	s.notifications.Stop()
 	s.maintenance.Stop()
 	s.webhookCancel()

@@ -33,6 +33,7 @@ type projectSnapshot struct {
 	notificationJSON                                               string
 	artifactJSON                                                   string
 	environment, environmentJSON, approvalStatus                   string
+	commitStatusJSON                                               string
 }
 type Step struct {
 	ID               int64   `json:"id"`
@@ -151,7 +152,10 @@ func (s *Service) Rollback(ctx context.Context, sourceID int64) (Deployment, err
 	if err != nil {
 		return Deployment{}, err
 	}
-	if _, err = tx.ExecContext(ctx, `UPDATE deployments SET environment=(SELECT environment FROM deployments WHERE id=?),environment_config_json=(SELECT environment_config_json FROM deployments WHERE id=?),approval_status='approved' WHERE id=?`, sourceID, sourceID, id); err != nil {
+	if _, err = tx.ExecContext(ctx, `UPDATE deployments SET environment=(SELECT environment FROM deployments WHERE id=?),environment_config_json=(SELECT environment_config_json FROM deployments WHERE id=?),commit_status_config_json=(SELECT commit_status_config_json FROM deployments WHERE id=?),approval_status='approved' WHERE id=?`, sourceID, sourceID, sourceID, id); err != nil {
+		return Deployment{}, err
+	}
+	if _, err = tx.ExecContext(ctx, `INSERT OR IGNORE INTO commit_status_deliveries(deployment_id,deployment_status,next_attempt_at,created_at) SELECT id,'queued',?,? FROM deployments WHERE id=? AND commit_status_config_json<>'{}'`, now, now, id); err != nil {
 		return Deployment{}, err
 	}
 	if _, err = tx.ExecContext(ctx, `INSERT INTO deployment_variables(deployment_id,name,is_secret,plain_value,cipher_value,source_version) SELECT ?,name,is_secret,plain_value,cipher_value,source_version FROM deployment_variables WHERE deployment_id=?`, id, sourceID); err != nil {
@@ -196,6 +200,8 @@ func (s *Service) createResolved(ctx context.Context, projectID, trigger, enviro
 			snapshot.notificationJSON = string(notificationRaw)
 			artifactRaw, _ := json.Marshal(resolved.Artifacts)
 			snapshot.artifactJSON = string(artifactRaw)
+			commitStatusRaw, _ := json.Marshal(resolved.CommitStatus)
+			snapshot.commitStatusJSON = string(commitStatusRaw)
 			env, exists := resolved.Environments[environment]
 			if !exists && environment != "production" {
 				return Deployment{}, fmt.Errorf("environment %q is not defined", environment)
@@ -235,6 +241,9 @@ func (s *Service) createResolved(ctx context.Context, projectID, trigger, enviro
 	if snapshot.artifactJSON == "" {
 		snapshot.artifactJSON = "{}"
 	}
+	if snapshot.commitStatusJSON == "" {
+		snapshot.commitStatusJSON = "{}"
+	}
 	res, err := tx.ExecContext(ctx, `INSERT INTO deployments(project_id,status,trigger_type,branch,commit_sha,commit_message,commit_author,queued_at,created_at,health_enabled,health_url,health_initial_delay_seconds,health_timeout_seconds,health_retries,health_retry_interval_seconds,health_expected_status,step_timeout_seconds,deployment_timeout_seconds,config_source,config_snapshot,application_config_json,notification_config_json,artifact_config_json) VALUES(?,'queued',?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`, projectID, trigger, snapshot.branch, commit.SHA, commit.Message, commit.Author, now, now, snapshot.healthEnabled, snapshot.healthURL, snapshot.healthInitial, snapshot.healthTimeout, snapshot.healthRetries, snapshot.healthInterval, snapshot.healthExpected, snapshot.stepTimeout, snapshot.deploymentTimeout, snapshot.configSource, snapshot.configSnapshot, snapshot.applicationJSON, snapshot.notificationJSON, snapshot.artifactJSON)
 	if err != nil {
 		return Deployment{}, err
@@ -245,6 +254,14 @@ func (s *Service) createResolved(ctx context.Context, projectID, trigger, enviro
 	}
 	if _, err = tx.ExecContext(ctx, `UPDATE deployments SET environment=?,environment_config_json=?,approval_status=? WHERE id=?`, snapshot.environment, snapshot.environmentJSON, snapshot.approvalStatus, id); err != nil {
 		return Deployment{}, err
+	}
+	if snapshot.commitStatusJSON != "{}" {
+		if _, err = tx.ExecContext(ctx, `UPDATE deployments SET commit_status_config_json=? WHERE id=?`, snapshot.commitStatusJSON, id); err != nil {
+			return Deployment{}, err
+		}
+		if _, err = tx.ExecContext(ctx, `INSERT OR IGNORE INTO commit_status_deliveries(deployment_id,deployment_status,next_attempt_at,created_at) VALUES(?,?,?,?)`, id, "queued", now, now); err != nil {
+			return Deployment{}, err
+		}
 	}
 	if _, err = tx.ExecContext(ctx, `INSERT INTO deployment_variables(deployment_id,name,is_secret,plain_value,cipher_value,source_version) SELECT ?,name,is_secret,plain_value,cipher_value,version FROM project_variables WHERE project_id=? AND environment=? AND replaced_at IS NULL`, id, projectID, snapshot.environment); err != nil {
 		return Deployment{}, err

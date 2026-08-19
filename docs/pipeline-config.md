@@ -152,3 +152,23 @@ Protected deployments remain queued but cannot be claimed by a runner until an
 Owner approves them. Frozen environments and deployments outside their window
 are rejected before queueing. Environment variables and Secrets use the
 environment-specific API and are snapshotted independently.
+
+## Git provider commit status
+
+Store a GitHub or GitLab API token as an environment Secret, then enable status
+reporting in the repository configuration:
+
+```yaml
+commitStatus:
+  enabled: true
+  provider: github
+  repository: organization/repository
+  tokenVariable: GITHUB_TOKEN
+  context: mini-ci-cd/production
+  # apiBase: https://github.example.com/api/v3
+```
+
+GitLab uses the same structure with `provider: gitlab` and a project path such
+as `group/project`. Queue and terminal statuses are delivered through a durable
+outbox with up to five attempts. Tokens are read only from the selected
+environment's encrypted deployment-variable snapshot.

@@ -85,7 +85,23 @@ func Migrate(db *sql.DB) error {
 			return err
 		}
 	}
+	if version < 11 {
+		if err := applyV11(db); err != nil {
+			return err
+		}
+	}
 	return nil
+}
+
+func applyV11(db *sql.DB) error {
+	if err := ensureColumn(db, "deployments", "commit_status_config_json", "TEXT NOT NULL DEFAULT '{}'"); err != nil {
+		return err
+	}
+	const schema = `CREATE TABLE IF NOT EXISTS commit_status_deliveries(id INTEGER PRIMARY KEY AUTOINCREMENT,deployment_id INTEGER NOT NULL REFERENCES deployments(id) ON DELETE CASCADE,deployment_status TEXT NOT NULL,status TEXT NOT NULL DEFAULT 'pending' CHECK(status IN ('pending','delivering','delivered','failed')),attempts INTEGER NOT NULL DEFAULT 0,next_attempt_at TEXT NOT NULL,last_error TEXT NOT NULL DEFAULT '',created_at TEXT NOT NULL,UNIQUE(deployment_id,deployment_status));CREATE INDEX IF NOT EXISTS idx_commit_status_pending ON commit_status_deliveries(status,next_attempt_at,id);CREATE TRIGGER IF NOT EXISTS enqueue_commit_status_insert AFTER INSERT ON deployments WHEN NEW.commit_status_config_json<>'{}' BEGIN INSERT OR IGNORE INTO commit_status_deliveries(deployment_id,deployment_status,next_attempt_at,created_at) VALUES(NEW.id,NEW.status,CURRENT_TIMESTAMP,CURRENT_TIMESTAMP);END;CREATE TRIGGER IF NOT EXISTS enqueue_commit_status_terminal AFTER UPDATE OF status ON deployments WHEN NEW.status IN ('succeeded','failed','cancelled','timed_out') AND OLD.status<>NEW.status AND NEW.commit_status_config_json<>'{}' BEGIN INSERT OR IGNORE INTO commit_status_deliveries(deployment_id,deployment_status,next_attempt_at,created_at) VALUES(NEW.id,NEW.status,CURRENT_TIMESTAMP,CURRENT_TIMESTAMP);END;`
+	if _, err := db.Exec(schema); err != nil {
+		return err
+	}
+	return recordMigration(db, 11)
 }
 
 func applyV10(db *sql.DB) error {

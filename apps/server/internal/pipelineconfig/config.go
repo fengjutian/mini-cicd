@@ -28,6 +28,16 @@ type Config struct {
 	Notifications []Notification         `yaml:"notifications" json:"notifications"`
 	Artifacts     ArtifactConfig         `yaml:"artifacts" json:"artifacts"`
 	Environments  map[string]Environment `yaml:"environments" json:"environments"`
+	CommitStatus  CommitStatus           `yaml:"commitStatus" json:"commitStatus"`
+}
+
+type CommitStatus struct {
+	Enabled       bool   `yaml:"enabled" json:"enabled"`
+	Provider      string `yaml:"provider" json:"provider"`
+	Repository    string `yaml:"repository" json:"repository"`
+	TokenVariable string `yaml:"tokenVariable" json:"tokenVariable"`
+	APIBase       string `yaml:"apiBase" json:"apiBase,omitempty"`
+	Context       string `yaml:"context" json:"context"`
 }
 
 type Environment struct {
@@ -80,6 +90,7 @@ type Resolved struct {
 	Notifications                  []Notification
 	Artifacts                      ArtifactConfig
 	Environments                   map[string]Environment
+	CommitStatus                   CommitStatus
 }
 
 var safeName = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9_.@-]*$`)
@@ -101,6 +112,7 @@ func Parse(raw []byte, defaults Resolved) (Resolved, error) {
 	out.Notifications = cfg.Notifications
 	out.Artifacts = cfg.Artifacts
 	out.Environments = cfg.Environments
+	out.CommitStatus = cfg.CommitStatus
 	if cfg.Timeouts.Step != "" {
 		d, err := time.ParseDuration(cfg.Timeouts.Step)
 		if err != nil || d <= 0 {
@@ -146,7 +158,37 @@ func Parse(raw []byte, defaults Resolved) (Resolved, error) {
 	if err := validateEnvironments(out.Environments); err != nil {
 		return Resolved{}, err
 	}
+	if err := validateCommitStatus(&out.CommitStatus); err != nil {
+		return Resolved{}, err
+	}
 	return out, nil
+}
+
+func validateCommitStatus(cfg *CommitStatus) error {
+	if !cfg.Enabled {
+		return nil
+	}
+	cfg.Provider = strings.ToLower(strings.TrimSpace(cfg.Provider))
+	if cfg.Provider != "github" && cfg.Provider != "gitlab" {
+		return errors.New("commitStatus.provider must be github or gitlab")
+	}
+	if strings.TrimSpace(cfg.Repository) == "" || strings.Contains(cfg.Repository, "..") {
+		return errors.New("commitStatus.repository is required")
+	}
+	if !regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*$`).MatchString(cfg.TokenVariable) {
+		return errors.New("commitStatus.tokenVariable must be an environment variable name")
+	}
+	if cfg.Context == "" {
+		cfg.Context = "mini-ci-cd"
+	}
+	if cfg.APIBase == "" {
+		if cfg.Provider == "github" {
+			cfg.APIBase = "https://api.github.com"
+		} else {
+			cfg.APIBase = "https://gitlab.com/api/v4"
+		}
+	}
+	return nil
 }
 
 func validateEnvironments(items map[string]Environment) error {

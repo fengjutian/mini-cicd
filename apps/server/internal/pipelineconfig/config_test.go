@@ -89,3 +89,14 @@ func TestEnvironmentConfig(t *testing.T) {
 		t.Fatal("approval not parsed")
 	}
 }
+
+func TestCommitStatusConfig(t *testing.T) {
+	raw := []byte("version: 1\npipeline:\n  deploy: [{name: x, command: y}]\ncommitStatus:\n  enabled: true\n  provider: github\n  repository: org/repo\n  tokenVariable: GITHUB_TOKEN\n")
+	got, err := Parse(raw, Resolved{StepTimeout: time.Minute, DeploymentTimeout: time.Hour})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.CommitStatus.APIBase != "https://api.github.com" || got.CommitStatus.Context != "mini-ci-cd" {
+		t.Fatalf("status: %#v", got.CommitStatus)
+	}
+}
