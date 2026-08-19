@@ -93,7 +93,7 @@ func (s *Service) Create(ctx context.Context, projectID, trigger string) (Deploy
 	return s.CreateForEnvironment(ctx, projectID, trigger, "production")
 }
 func (s *Service) CreateForEnvironment(ctx context.Context, projectID, trigger, environment string) (Deployment, error) {
-	if trigger != "manual" && trigger != "webhook" && trigger != "redeploy" && trigger != "scheduled" {
+	if trigger != "manual" && trigger != "webhook" && trigger != "redeploy" {
 		return Deployment{}, errors.New("invalid trigger type")
 	}
 	snapshot, err := s.projectSnapshot(ctx, projectID)
@@ -226,7 +226,9 @@ func (s *Service) createResolved(ctx context.Context, projectID, trigger, enviro
 			envRaw, _ := json.Marshal(env)
 			snapshot.environmentJSON = string(envRaw)
 			snapshot.requiredApprovals = env.RequiredApprovals
-			if env.ApprovalRequired && snapshot.requiredApprovals == 0 { snapshot.requiredApprovals = 1 }
+			if env.ApprovalRequired && snapshot.requiredApprovals == 0 {
+				snapshot.requiredApprovals = 1
+			}
 			if snapshot.requiredApprovals > 0 {
 				snapshot.approvalStatus = "pending"
 			}
@@ -397,10 +399,62 @@ func (s *Service) Claim(ctx context.Context, runnerID string) (Deployment, bool,
 }
 
 func (s *Service) Approve(ctx context.Context, id int64, userID, approvedBy, comment string) (Deployment, error) {
-	tx,err:=s.db.BeginTx(ctx,nil);if err!=nil{return Deployment{},err};defer tx.Rollback();var required int;var state,status string;if err=tx.QueryRowContext(ctx,`SELECT required_approvals,approval_status,status FROM deployments WHERE id=?`,id).Scan(&required,&state,&status);err!=nil{return Deployment{},err};if state!="pending"||status!="queued"{return Deployment{},errors.New("deployment is not awaiting approval")};now:=time.Now().UTC().Format(time.RFC3339Nano);if _,err=tx.ExecContext(ctx,`INSERT INTO deployment_approvals(deployment_id,user_id,username,decision,comment,created_at) VALUES(?,?,?,'approved',?,?)`,id,userID,approvedBy,comment,now);err!=nil{return Deployment{},errors.New("user has already reviewed this deployment")};var count int;if err=tx.QueryRowContext(ctx,`SELECT COUNT(*) FROM deployment_approvals WHERE deployment_id=? AND decision='approved'`,id).Scan(&count);err!=nil{return Deployment{},err};if count>=required{_,err=tx.ExecContext(ctx,`UPDATE deployments SET approval_status='approved',approved_at=?,approved_by=? WHERE id=?`,now,approvedBy,id)};if err!=nil{return Deployment{},err};if err=tx.Commit();err!=nil{return Deployment{},err};return s.Get(ctx,id)
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return Deployment{}, err
+	}
+	defer tx.Rollback()
+	var required int
+	var state, status string
+	if err = tx.QueryRowContext(ctx, `SELECT required_approvals,approval_status,status FROM deployments WHERE id=?`, id).Scan(&required, &state, &status); err != nil {
+		return Deployment{}, err
+	}
+	if state != "pending" || status != "queued" {
+		return Deployment{}, errors.New("deployment is not awaiting approval")
+	}
+	now := time.Now().UTC().Format(time.RFC3339Nano)
+	if _, err = tx.ExecContext(ctx, `INSERT INTO deployment_approvals(deployment_id,user_id,username,decision,comment,created_at) VALUES(?,?,?,'approved',?,?)`, id, userID, approvedBy, comment, now); err != nil {
+		return Deployment{}, errors.New("user has already reviewed this deployment")
+	}
+	var count int
+	if err = tx.QueryRowContext(ctx, `SELECT COUNT(*) FROM deployment_approvals WHERE deployment_id=? AND decision='approved'`, id).Scan(&count); err != nil {
+		return Deployment{}, err
+	}
+	if count >= required {
+		_, err = tx.ExecContext(ctx, `UPDATE deployments SET approval_status='approved',approved_at=?,approved_by=? WHERE id=?`, now, approvedBy, id)
+	}
+	if err != nil {
+		return Deployment{}, err
+	}
+	if err = tx.Commit(); err != nil {
+		return Deployment{}, err
+	}
+	return s.Get(ctx, id)
 }
 
-func (s *Service) Reject(ctx context.Context,id int64,userID,username,comment string)(Deployment,error){tx,err:=s.db.BeginTx(ctx,nil);if err!=nil{return Deployment{},err};defer tx.Rollback();now:=time.Now().UTC().Format(time.RFC3339Nano);res,err:=tx.ExecContext(ctx,`UPDATE deployments SET approval_status='rejected',status='cancelled',finished_at=?,error_summary='deployment rejected by approver' WHERE id=? AND status='queued' AND approval_status='pending'`,now,id);if err!=nil{return Deployment{},err};n,_:=res.RowsAffected();if n!=1{return Deployment{},errors.New("deployment is not awaiting approval")};if _,err=tx.ExecContext(ctx,`INSERT INTO deployment_approvals(deployment_id,user_id,username,decision,comment,created_at) VALUES(?,?,?,'rejected',?,?)`,id,userID,username,comment,now);err!=nil{return Deployment{},err};if err=tx.Commit();err!=nil{return Deployment{},err};return s.Get(ctx,id)}
+func (s *Service) Reject(ctx context.Context, id int64, userID, username, comment string) (Deployment, error) {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return Deployment{}, err
+	}
+	defer tx.Rollback()
+	now := time.Now().UTC().Format(time.RFC3339Nano)
+	res, err := tx.ExecContext(ctx, `UPDATE deployments SET approval_status='rejected',status='cancelled',finished_at=?,error_summary='deployment rejected by approver' WHERE id=? AND status='queued' AND approval_status='pending'`, now, id)
+	if err != nil {
+		return Deployment{}, err
+	}
+	n, _ := res.RowsAffected()
+	if n != 1 {
+		return Deployment{}, errors.New("deployment is not awaiting approval")
+	}
+	if _, err = tx.ExecContext(ctx, `INSERT INTO deployment_approvals(deployment_id,user_id,username,decision,comment,created_at) VALUES(?,?,?,'rejected',?,?)`, id, userID, username, comment, now); err != nil {
+		return Deployment{}, err
+	}
+	if err = tx.Commit(); err != nil {
+		return Deployment{}, err
+	}
+	return s.Get(ctx, id)
+}
 
 func (s *Service) Cancel(ctx context.Context, id int64) error {
 	res, err := s.db.ExecContext(ctx, `UPDATE deployments SET status=CASE WHEN status='queued' THEN 'cancelled' ELSE 'cancelling' END,cancel_requested_at=?,finished_at=CASE WHEN status='queued' THEN ? ELSE finished_at END WHERE id=? AND status IN ('queued','preparing','running')`, time.Now().UTC().Format(time.RFC3339Nano), time.Now().UTC().Format(time.RFC3339Nano), id)

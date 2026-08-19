@@ -138,6 +138,7 @@ environments:
     allowedBranches: [main, develop]
   production:
     approvalRequired: true
+    requiredApprovals: 2
     allowedBranches: [main]
     frozen: false
     deploymentWindow:
@@ -152,6 +153,12 @@ Protected deployments remain queued but cannot be claimed by a runner until an
 Owner approves them. Frozen environments and deployments outside their window
 are rejected before queueing. Environment variables and Secrets use the
 environment-specific API and are snapshotted independently.
+
+`requiredApprovals` accepts 0 to 20 unique reviewers. The legacy
+`approvalRequired: true` remains equivalent to one required approval. Each user
+can review once; reaching the threshold releases the deployment, while any
+rejection cancels it and records the review comment. Approval history is
+available from `GET /api/v1/deployments/{id}/approvals`.
 
 ## Git provider commit status
 

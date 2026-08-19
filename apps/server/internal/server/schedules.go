@@ -172,7 +172,7 @@ func (s *Server) runDueSchedule() {
 	if err = tx.Commit(); err != nil {
 		return
 	}
-	d, err := s.deps.CreateForEnvironment(ctx, project, "scheduled", environment)
+	d, err := s.deps.CreateForEnvironment(ctx, project, "manual", environment)
 	if err != nil {
 		_, _ = s.db.Exec(`UPDATE deployment_schedules SET last_error=? WHERE id=?`, err.Error(), id)
 		return

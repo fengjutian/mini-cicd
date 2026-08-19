@@ -79,7 +79,19 @@ func (s *Server) approveDeployment(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	u := r.Context().Value(userKey).(user)
-	var input struct{Comment string `json:"comment"`}; if r.ContentLength>0 { if err:=decodeJSON(r,&input);err!=nil{writeError(w,400,"invalid_request",err.Error());return} }; if len(input.Comment)>500{writeError(w,422,"invalid_comment","Approval comment is too long.");return}
+	var input struct {
+		Comment string `json:"comment"`
+	}
+	if r.ContentLength > 0 {
+		if err := decodeJSON(r, &input); err != nil {
+			writeError(w, 400, "invalid_request", err.Error())
+			return
+		}
+	}
+	if len(input.Comment) > 500 {
+		writeError(w, 422, "invalid_comment", "Approval comment is too long.")
+		return
+	}
 	d, err := s.deps.Approve(r.Context(), id, u.ID, u.Username, input.Comment)
 	if err != nil {
 		s.deploymentError(w, err)
@@ -88,7 +100,54 @@ func (s *Server) approveDeployment(w http.ResponseWriter, r *http.Request) {
 	s.runner.Wake()
 	writeJSON(w, http.StatusOK, d)
 }
-func (s *Server) rejectDeployment(w http.ResponseWriter,r *http.Request){id,ok:=deploymentID(w,r);if !ok{return};var input struct{Comment string `json:"comment"`};if err:=decodeJSON(r,&input);err!=nil{writeError(w,400,"invalid_request",err.Error());return};if len(input.Comment)>500{writeError(w,422,"invalid_comment","Rejection comment is too long.");return};u:=r.Context().Value(userKey).(user);d,err:=s.deps.Reject(r.Context(),id,u.ID,u.Username,input.Comment);if err!=nil{s.deploymentError(w,err);return};s.runner.Wake();writeJSON(w,http.StatusOK,d)}
+func (s *Server) rejectDeployment(w http.ResponseWriter, r *http.Request) {
+	id, ok := deploymentID(w, r)
+	if !ok {
+		return
+	}
+	var input struct {
+		Comment string `json:"comment"`
+	}
+	if err := decodeJSON(r, &input); err != nil {
+		writeError(w, 400, "invalid_request", err.Error())
+		return
+	}
+	if len(input.Comment) > 500 {
+		writeError(w, 422, "invalid_comment", "Rejection comment is too long.")
+		return
+	}
+	u := r.Context().Value(userKey).(user)
+	d, err := s.deps.Reject(r.Context(), id, u.ID, u.Username, input.Comment)
+	if err != nil {
+		s.deploymentError(w, err)
+		return
+	}
+	s.runner.Wake()
+	writeJSON(w, http.StatusOK, d)
+}
+func (s *Server) listDeploymentApprovals(w http.ResponseWriter, r *http.Request) {
+	id, ok := deploymentID(w, r)
+	if !ok {
+		return
+	}
+	rows, err := s.db.QueryContext(r.Context(), `SELECT id,user_id,username,decision,comment,created_at FROM deployment_approvals WHERE deployment_id=? ORDER BY id`, id)
+	if err != nil {
+		writeError(w, 500, "approval_query_failed", "Could not read deployment approvals.")
+		return
+	}
+	defer rows.Close()
+	items := []map[string]any{}
+	for rows.Next() {
+		var approvalID int64
+		var userID, username, decision, comment, created string
+		if err = rows.Scan(&approvalID, &userID, &username, &decision, &comment, &created); err != nil {
+			writeError(w, 500, "approval_query_failed", "Could not read deployment approvals.")
+			return
+		}
+		items = append(items, map[string]any{"id": approvalID, "userId": userID, "username": username, "decision": decision, "comment": comment, "createdAt": created})
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"items": items})
+}
 func (s *Server) listDeployments(w http.ResponseWriter, r *http.Request) {
 	items, err := s.deps.List(r.Context(), r.PathValue("id"))
 	if err != nil {
