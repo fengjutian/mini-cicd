@@ -187,3 +187,15 @@ cache:
 The cache key combines `key` with a SHA-256 digest of `keyFiles`. Cache paths
 must remain inside the checkout and symbolic links are rejected. A cache is
 restored after checkout and saved after successful build steps.
+
+## Deployment options
+
+Manual deployments accept an optional JSON body with `priority` (-100 to 100),
+`cancelPrevious`, and up to 20 non-secret `parameters`. Parameters override the
+environment snapshot only for that immutable deployment. The runner claims
+higher-priority queued deployments first while preserving project-level mutual
+exclusion.
+
+Saved artifacts are listed by `GET /api/v1/deployments/{id}/artifacts`; every
+file includes its size and SHA-256 digest and can be downloaded through the
+authenticated artifact path endpoint.
