@@ -33,7 +33,7 @@ func TestParseDeploymentAdapters(t *testing.T) {
 	tests := []struct{ yaml, want string }{
 		{"version: 1\npipeline:\n  build: [{name: x, command: y}]\napplication:\n  adapter: docker-compose\n  composeFile: deploy/compose.yaml\n  build: true\n  services: [web]\n", "docker compose -f 'deploy/compose.yaml' up -d --build --remove-orphans web"},
 		{"version: 1\npipeline:\n  build: [{name: x, command: y}]\napplication:\n  adapter: systemd\n  unit: my-app.service\n", "systemctl --user restart my-app.service"},
-		{"version: 1\npipeline:\n  build: [{name: x, command: y}]\napplication:\n  adapter: pm2\n  ecosystemFile: deploy/ecosystem.js\n  environment: production\n", "pm2 startOrReload 'deploy/ecosystem.js' --env production --update-env"},
+		{"version: 1\npipeline:\n  build: [{name: x, command: y}]\napplication:\n  adapter: pm2\n  ecosystemFile: deploy/ecosystem.js\n  processName: api\n  environment: production\n", "pm2 startOrReload 'deploy/ecosystem.js' --env production --update-env"},
 	}
 	for _, tt := range tests {
 		got, err := Parse([]byte(tt.yaml), defaults)

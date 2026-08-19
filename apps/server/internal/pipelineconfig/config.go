@@ -35,6 +35,7 @@ type Application struct {
 	Build         bool     `yaml:"build" json:"build,omitempty"`
 	Unit          string   `yaml:"unit" json:"unit,omitempty"`
 	EcosystemFile string   `yaml:"ecosystemFile" json:"ecosystemFile,omitempty"`
+	ProcessName   string   `yaml:"processName" json:"processName,omitempty"`
 	Environment   string   `yaml:"environment" json:"environment,omitempty"`
 }
 
@@ -112,7 +113,7 @@ func applicationStep(app *Application) (*project.Step, error) {
 	}
 	switch app.Adapter {
 	case "docker-compose":
-		if app.Unit != "" || app.EcosystemFile != "" || app.Environment != "" {
+		if app.Unit != "" || app.EcosystemFile != "" || app.ProcessName != "" || app.Environment != "" {
 			return nil, errors.New("docker-compose adapter contains fields for another adapter")
 		}
 		if app.ComposeFile == "" {
@@ -141,7 +142,7 @@ func applicationStep(app *Application) (*project.Step, error) {
 		}
 		return &project.Step{Name: "Deploy with Docker Compose", Command: strings.Join(args, " ")}, nil
 	case "systemd":
-		if app.ComposeFile != "" || app.ProjectName != "" || len(app.Services) != 0 || app.Build || app.EcosystemFile != "" || app.Environment != "" {
+		if app.ComposeFile != "" || app.ProjectName != "" || len(app.Services) != 0 || app.Build || app.EcosystemFile != "" || app.ProcessName != "" || app.Environment != "" {
 			return nil, errors.New("systemd adapter contains fields for another adapter")
 		}
 		if !safeName.MatchString(app.Unit) {
@@ -154,6 +155,9 @@ func applicationStep(app *Application) (*project.Step, error) {
 		}
 		if app.EcosystemFile == "" {
 			app.EcosystemFile = "ecosystem.config.js"
+		}
+		if !safeName.MatchString(app.ProcessName) {
+			return nil, errors.New("application.processName is required and must be valid for PM2")
 		}
 		if err := safeRelativePath(app.EcosystemFile); err != nil {
 			return nil, fmt.Errorf("application.ecosystemFile: %w", err)

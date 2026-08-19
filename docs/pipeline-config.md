@@ -65,8 +65,15 @@ PM2:
 application:
   adapter: pm2
   ecosystemFile: deploy/ecosystem.config.js
+  processName: api
   environment: production
 ```
 
 The respective Docker, systemd, or PM2 executable must be available to the
 runner service account. Adapter paths must remain inside the checkout.
+
+After a successful adapter deployment, the project page can query application
+status and the latest bounded application logs. Docker Compose uses `ps` and
+`logs`, systemd uses `systemctl --user show` and `journalctl --user-unit`, and
+PM2 uses `describe` and non-streaming `logs`. Commands time out after 15 seconds,
+return at most 1 MiB, and log requests are limited to 2,000 lines.

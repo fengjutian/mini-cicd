@@ -55,6 +55,10 @@ paths:
     post: {tags: [Deployments], summary: Resolve branch and queue a deployment, responses: {'201': {description: Queued deployment, content: {application/json: {schema: {$ref: '#/components/schemas/Deployment'}}}}}}
   /projects/{id}/webhook-deliveries:
     get: {tags: [Webhooks], summary: List the 200 latest webhook deliveries, parameters: [{$ref: '#/components/parameters/ProjectId'}], responses: {'200': {description: Deliveries, content: {application/json: {schema: {type: array, items: {$ref: '#/components/schemas/WebhookDelivery'}}}}}}}
+  /projects/{id}/application/status:
+    get: {tags: [Projects], summary: Read status using the latest successful application adapter, parameters: [{$ref: '#/components/parameters/ProjectId'}], responses: {'200': {$ref: '#/components/responses/JSON'}, '409': {$ref: '#/components/responses/Error'}}}
+  /projects/{id}/application/logs:
+    get: {tags: [Projects], summary: Read bounded application logs, parameters: [{$ref: '#/components/parameters/ProjectId'}, {name: lines, in: query, schema: {type: integer, minimum: 1, maximum: 2000, default: 200}}], responses: {'200': {$ref: '#/components/responses/JSON'}, '409': {$ref: '#/components/responses/Error'}}}
   /deployments/{deploymentId}:
     get: {tags: [Deployments], summary: Get deployment, parameters: [{$ref: '#/components/parameters/DeploymentId'}], responses: {'200': {description: Deployment, content: {application/json: {schema: {$ref: '#/components/schemas/Deployment'}}}}}}
   /deployments/{deploymentId}/steps:

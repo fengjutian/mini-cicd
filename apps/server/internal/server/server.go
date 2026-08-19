@@ -18,6 +18,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/charlesfeng/mini-cicd/apps/server/internal/application"
 	"github.com/charlesfeng/mini-cicd/apps/server/internal/auth"
 	"github.com/charlesfeng/mini-cicd/apps/server/internal/config"
 	"github.com/charlesfeng/mini-cicd/apps/server/internal/deployment"
@@ -53,6 +54,7 @@ type Server struct {
 	limiter        *loginLimiter
 	webhookLimiter *requestLimiter
 	projects       *project.Service
+	applications   *application.Service
 	deps           *deployment.Service
 	runner         *runner.Manager
 	logs           *logstore.Store
@@ -96,7 +98,7 @@ func New(db *sql.DB, cfg config.Config, logger *slog.Logger) (*Server, error) {
 	if err != nil {
 		return nil, err
 	}
-	s := &Server{db: db, cfg: cfg, logger: logger, limiter: newLoginLimiter(), webhookLimiter: newRequestLimiter(120), projects: project.New(db, box), deps: deps, logs: logs, box: box}
+	s := &Server{db: db, cfg: cfg, logger: logger, limiter: newLoginLimiter(), webhookLimiter: newRequestLimiter(120), projects: project.New(db, box), applications: application.New(db), deps: deps, logs: logs, box: box}
 	s.webhookCtx, s.webhookCancel = context.WithCancel(context.Background())
 	s.runner = runner.New(db, deps, git, spaces, logs, box, cfg.Shell, cfg.GlobalParallel, cfg.CancelGrace, logger).UseRemote(cfg.RunnerEndpoint)
 	s.maintenance = maintenance.New(db, logs, spaces, cfg.CleanupInterval, cfg.WorkspaceRetention, cfg.LogRetention, cfg.DeploymentRetention, logger).ConfigureBackups(cfg.DatabasePath, filepath.Join(cfg.DataDir, "backups"), cfg.BackupInterval, cfg.BackupRetention).ConfigureAudit(cfg.AuditRetention, cfg.AuditMaxEvents)
@@ -123,6 +125,8 @@ func New(db *sql.DB, cfg config.Config, logger *slog.Logger) (*Server, error) {
 	mux.HandleFunc("POST /api/v1/projects/{id}/deployments", s.requireAuth(s.createDeployment))
 	mux.HandleFunc("GET /api/v1/projects/{id}/deployments", s.requireAuth(s.listDeployments))
 	mux.HandleFunc("GET /api/v1/projects/{id}/webhook-deliveries", s.requireAuth(s.listWebhookDeliveries))
+	mux.HandleFunc("GET /api/v1/projects/{id}/application/status", s.requireAuth(s.applicationStatus))
+	mux.HandleFunc("GET /api/v1/projects/{id}/application/logs", s.requireAuth(s.applicationLogs))
 	mux.HandleFunc("GET /api/v1/deployments/{id}", s.requireAuth(s.getDeployment))
 	mux.HandleFunc("GET /api/v1/deployments/{id}/steps", s.requireAuth(s.deploymentSteps))
 	mux.HandleFunc("POST /api/v1/deployments/{id}/cancel", s.requireAuth(s.cancelDeployment))

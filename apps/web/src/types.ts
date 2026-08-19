@@ -11,3 +11,4 @@ export type Project = {
 export type Deployment = { id: number; projectId: string; status: string; triggerType: string; branch: string; commitSha?: string; commitMessage: string; commitAuthor: string; errorSummary: string; configSource: 'project' | 'repository'; configSnapshot?: string; queuedAt?: string; startedAt?: string; finishedAt?: string; createdAt: string }
 export type DeploymentStep = { id: number; deploymentId: number; sequence: number; phase: string; name: string; command: string; workingDirectory: string; status: string; exitCode?: number; startedAt?: string; finishedAt?: string }
 export type Variable = { name: string; version: number; isSecret: boolean; value?: string; updatedAt: string }
+export type ApplicationResult = { adapter: string; deploymentId: number; output: string; checkedAt: string }

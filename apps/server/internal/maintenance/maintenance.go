@@ -195,7 +195,13 @@ func (m *Manager) claimDeploymentPaths(ctx context.Context, column, before strin
 		return nil, err
 	}
 	defer tx.Rollback()
-	query := fmt.Sprintf(`SELECT id,project_id FROM deployments WHERE finished_at<? AND %s IS NOT NULL AND status IN ('succeeded','failed','cancelled','timed_out')`, column)
+	extra := ""
+	if column == "workspace_path" {
+		// The latest successful adapter deployment is the source of truth for
+		// Docker Compose status and logs, which require its snapshotted file.
+		extra = ` AND id NOT IN (SELECT MAX(id) FROM deployments WHERE status='succeeded' AND application_config_json<>'{}' GROUP BY project_id)`
+	}
+	query := fmt.Sprintf(`SELECT id,project_id FROM deployments WHERE finished_at<? AND %s IS NOT NULL AND status IN ('succeeded','failed','cancelled','timed_out')%s`, column, extra)
 	rows, err := tx.QueryContext(ctx, query, before)
 	if err != nil {
 		return nil, err

@@ -66,3 +66,43 @@ func TestRunOnceCleansAndPrunes(t *testing.T) {
 		t.Fatalf("sessions=%d deployments=%d paths=%d audits=%d", sessions, deployments, paths, audits)
 	}
 }
+
+func TestCleanupKeepsLatestApplicationWorkspace(t *testing.T) {
+	data := t.TempDir()
+	db, err := database.Open(filepath.Join(data, "test.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	if err = database.Migrate(db); err != nil {
+		t.Fatal(err)
+	}
+	old := time.Now().UTC().Add(-2 * time.Hour).Format(time.RFC3339Nano)
+	_, err = db.Exec(`INSERT INTO projects(id,name,slug,repository_url,branch,created_at,updated_at) VALUES('p','p','p','https://example/repo','main',?,?)`, old, old)
+	if err != nil {
+		t.Fatal(err)
+	}
+	res, err := db.Exec(`INSERT INTO deployments(project_id,status,trigger_type,branch,created_at,finished_at,application_config_json) VALUES('p','succeeded','manual','main',?,?,'{"adapter":"docker-compose","composeFile":"compose.yaml"}')`, old, old)
+	if err != nil {
+		t.Fatal(err)
+	}
+	id, _ := res.LastInsertId()
+	spaces, _ := workspace.New(data)
+	space, err := spaces.Create("p", id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, _ = db.Exec(`UPDATE deployments SET workspace_path=? WHERE id=?`, space, id)
+	logs, _ := logstore.New(data, 1024)
+	m := New(db, logs, spaces, time.Hour, time.Nanosecond, time.Hour, 100, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	if err = m.RunOnce(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	var stored string
+	if err = db.QueryRow(`SELECT workspace_path FROM deployments WHERE id=?`, id).Scan(&stored); err != nil {
+		t.Fatal(err)
+	}
+	if stored != space {
+		t.Fatalf("application workspace was cleaned: %q", stored)
+	}
+}
