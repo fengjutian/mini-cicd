@@ -68,3 +68,20 @@ func TestNotConfigured(t *testing.T) {
 		t.Fatalf("got %v", err)
 	}
 }
+
+func TestLifecycleActionUsesAdapterSnapshot(t *testing.T) {
+	db := appDB(t)
+	_, err := db.Exec(`INSERT INTO deployments(project_id,status,trigger_type,branch,created_at,workspace_path,application_config_json) VALUES('p','succeeded','manual','main',?,'/work/one','{"adapter":"systemd","unit":"app.service"}')`, time.Now().UTC().Format(time.RFC3339Nano))
+	if err != nil {
+		t.Fatal(err)
+	}
+	executor := &fakeExecutor{}
+	service := NewWithExecutor(db, executor)
+	if _, err = service.Action(context.Background(), "p", "restart"); err != nil {
+		t.Fatal(err)
+	}
+	want := []string{"--user", "restart", "app.service"}
+	if executor.name != "systemctl" || !reflect.DeepEqual(executor.args, want) {
+		t.Fatalf("command: %s %#v", executor.name, executor.args)
+	}
+}

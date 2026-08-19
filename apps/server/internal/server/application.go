@@ -31,6 +31,19 @@ func (s *Server) applicationLogs(w http.ResponseWriter, r *http.Request) {
 	}
 	writeJSON(w, http.StatusOK, result)
 }
+func (s *Server) applicationAction(w http.ResponseWriter, r *http.Request) {
+	action := r.PathValue("action")
+	if action != "start" && action != "stop" && action != "restart" {
+		writeError(w, http.StatusBadRequest, "invalid_action", "Action must be start, stop, or restart.")
+		return
+	}
+	result, err := s.applications.Action(r.Context(), r.PathValue("id"), action)
+	if err != nil {
+		s.applicationError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, result)
+}
 
 func (s *Server) applicationError(w http.ResponseWriter, err error) {
 	if errors.Is(err, application.ErrNotConfigured) {

@@ -237,6 +237,9 @@ func (s *Service) PutVariable(ctx context.Context, projectID string, in Variable
 	return s.PutEnvironmentVariable(ctx, projectID, "production", in)
 }
 func (s *Service) PutEnvironmentVariable(ctx context.Context, projectID, environment string, in VariableInput) (Variable, error) {
+	if !slugPattern.MatchString(environment) || len(environment) > 32 {
+		return Variable{}, errors.New("invalid environment name")
+	}
 	if !namePattern.MatchString(in.Name) || len(in.Name) > 128 {
 		return Variable{}, errors.New("invalid environment variable name")
 	}
@@ -276,6 +279,9 @@ func (s *Service) ListVariables(ctx context.Context, projectID string) ([]Variab
 	return s.ListEnvironmentVariables(ctx, projectID, "production")
 }
 func (s *Service) ListEnvironmentVariables(ctx context.Context, projectID, environment string) ([]Variable, error) {
+	if !slugPattern.MatchString(environment) || len(environment) > 32 {
+		return nil, errors.New("invalid environment name")
+	}
 	rows, err := s.db.QueryContext(ctx, `SELECT name,is_secret,COALESCE(plain_value,''),version,created_at FROM project_variables WHERE project_id=? AND environment=? AND replaced_at IS NULL ORDER BY name`, projectID, environment)
 	if err != nil {
 		return nil, err
@@ -299,6 +305,9 @@ func (s *Service) DeleteVariable(ctx context.Context, projectID, name string) er
 	return s.DeleteEnvironmentVariable(ctx, projectID, "production", name)
 }
 func (s *Service) DeleteEnvironmentVariable(ctx context.Context, projectID, environment, name string) error {
+	if !slugPattern.MatchString(environment) || len(environment) > 32 {
+		return errors.New("invalid environment name")
+	}
 	res, err := s.db.ExecContext(ctx, `UPDATE project_variables SET replaced_at=? WHERE project_id=? AND environment=? AND name=? AND replaced_at IS NULL`, time.Now().UTC().Format(time.RFC3339Nano), projectID, environment, name)
 	if err != nil {
 		return err

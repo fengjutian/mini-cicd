@@ -138,6 +138,7 @@ func New(db *sql.DB, cfg config.Config, logger *slog.Logger) (*Server, error) {
 	mux.HandleFunc("GET /api/v1/projects/{id}/webhook-deliveries", s.requireAuth(s.listWebhookDeliveries))
 	mux.HandleFunc("GET /api/v1/projects/{id}/application/status", s.requireAuth(s.applicationStatus))
 	mux.HandleFunc("GET /api/v1/projects/{id}/application/logs", s.requireAuth(s.applicationLogs))
+	mux.HandleFunc("POST /api/v1/projects/{id}/application/{action}", s.requireAuth(s.applicationAction))
 	mux.HandleFunc("GET /api/v1/projects/{id}/notification-deliveries", s.requireAuth(s.listNotificationDeliveries))
 	mux.HandleFunc("GET /api/v1/deployments/{id}", s.requireAuth(s.getDeployment))
 	mux.HandleFunc("GET /api/v1/deployments/{id}/steps", s.requireAuth(s.deploymentSteps))

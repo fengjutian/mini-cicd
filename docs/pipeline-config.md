@@ -78,6 +78,12 @@ status and the latest bounded application logs. Docker Compose uses `ps` and
 PM2 uses `describe` and non-streaming `logs`. Commands time out after 15 seconds,
 return at most 1 MiB, and log requests are limited to 2,000 lines.
 
+The application page also exposes confirmed Start, Stop, and Restart actions.
+Docker Compose maps these to `up -d`, `stop`, and `restart`; systemd uses
+user-level service commands; PM2 targets the configured `processName`. Start
+and Restart automatically run the deployment's snapshotted health check and
+report a failure when the process command succeeds but health does not recover.
+
 ## Deployment notifications
 
 Webhook endpoints must be stored as project Secrets; URLs are never committed to
