@@ -125,6 +125,33 @@ func (g *Git) ResolveCommit(ctx context.Context, projectID, repo, branch, sha st
 	return result, nil
 }
 
+// ReadFile returns a repository file exactly as stored at an immutable commit.
+func (g *Git) ReadFile(ctx context.Context, projectID, repo, sha, name string) ([]byte, error) {
+	if !shaPattern.MatchString(sha) || name == "" || strings.Contains(name, "..") {
+		return nil, errors.New("invalid repository file request")
+	}
+	unlock := g.projectLock(projectID)
+	defer unlock()
+	env, cleanup, err := g.gitEnvironment(projectID)
+	if err != nil {
+		return nil, err
+	}
+	defer cleanup()
+	cache := g.cachePath(projectID)
+	if err = g.updateCache(ctx, cache, repo, env); err != nil {
+		return nil, err
+	}
+	object := sha + ":" + name
+	if _, err = run(ctx, cache, env, "git", "cat-file", "-e", object); err != nil {
+		return nil, os.ErrNotExist
+	}
+	out, err := run(ctx, cache, env, "git", "show", object)
+	if err != nil {
+		return nil, err
+	}
+	return []byte(out), nil
+}
+
 func (g *Git) Checkout(ctx context.Context, projectID, repo, sha, workspace string) error {
 	unlock := g.projectLock(projectID)
 	defer unlock()

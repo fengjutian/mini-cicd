@@ -19,7 +19,7 @@
 - Step/Deployment 超时、取消和跨平台进程树终止。
 - 部署日志持久化、写前脱敏、大小限制和 SSE 续传。
 
-完整产品需求见 [docs/requirements.md](docs/requirements.md)。
+完整产品需求见 [docs/requirements.md](docs/requirements.md)。仓库级流水线配置见 [docs/pipeline-config.md](docs/pipeline-config.md)。
 
 ## 环境要求
 

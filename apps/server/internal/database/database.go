@@ -60,7 +60,39 @@ func Migrate(db *sql.DB) error {
 			return err
 		}
 	}
+	if version < 6 {
+		if err := applyV6(db); err != nil {
+			return err
+		}
+	}
+	if version < 7 {
+		if err := applyV7(db); err != nil {
+			return err
+		}
+	}
 	return nil
+}
+
+func applyV7(db *sql.DB) error {
+	if err := ensureColumn(db, "deployments", "application_config_json", "TEXT NOT NULL DEFAULT '{}'"); err != nil {
+		return err
+	}
+	return recordMigration(db, 7)
+}
+
+func applyV6(db *sql.DB) error {
+	columns := []struct{ table, name, definition string }{
+		{"deployments", "step_timeout_seconds", "INTEGER NOT NULL DEFAULT 900"},
+		{"deployments", "deployment_timeout_seconds", "INTEGER NOT NULL DEFAULT 3600"},
+		{"deployments", "config_source", "TEXT NOT NULL DEFAULT 'project'"},
+		{"deployments", "config_snapshot", "TEXT NOT NULL DEFAULT ''"},
+	}
+	for _, c := range columns {
+		if err := ensureColumn(db, c.table, c.name, c.definition); err != nil {
+			return err
+		}
+	}
+	return recordMigration(db, 6)
 }
 
 func bootstrapMigrationsTable(db *sql.DB) error {

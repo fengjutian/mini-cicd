@@ -16,6 +16,12 @@ type fakeResolver struct{}
 func (fakeResolver) Resolve(context.Context, string, string, string) (Commit, error) {
 	return Commit{SHA: "0123456789012345678901234567890123456789", Message: "test", Author: "tester"}, nil
 }
+
+type configResolver struct{ fakeResolver }
+
+func (configResolver) ReadFile(context.Context, string, string, string, string) ([]byte, error) {
+	return []byte("version: 1\npipeline:\n  build:\n    - name: Repository build\n      command: make build\n  deploy:\n    - name: Repository deploy\n      command: make deploy\ntimeouts:\n  step: 2m\n  deployment: 10m\n"), nil
+}
 func testDB(t *testing.T) *sql.DB {
 	t.Helper()
 	db, err := database.Open(filepath.Join(t.TempDir(), "test.db"))
@@ -142,5 +148,36 @@ func TestCreateAtCommitAndHealthSnapshot(t *testing.T) {
 	}
 	if !enabled || url != "http://127.0.0.1/health" {
 		t.Fatalf("health snapshot changed: %v %q", enabled, url)
+	}
+}
+
+func TestCreateSnapshotsRepositoryPipeline(t *testing.T) {
+	db := testDB(t)
+	insertProject(t, db, "one")
+	s := New(db, configResolver{})
+	d, err := s.Create(context.Background(), "one", "manual")
+	if err != nil {
+		t.Fatal(err)
+	}
+	steps, err := s.Steps(context.Background(), d.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(steps) != 2 || steps[0].Name != "Repository build" || steps[1].Phase != "deploy" {
+		t.Fatalf("repository pipeline was not snapshotted: %#v", steps)
+	}
+	got, err := s.Get(context.Background(), d.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.ConfigSource != "repository" || got.ConfigSnapshot == "" {
+		t.Fatalf("missing config snapshot: %#v", got)
+	}
+	var stepTimeout, deploymentTimeout int
+	if err = db.QueryRow(`SELECT step_timeout_seconds,deployment_timeout_seconds FROM deployments WHERE id=?`, d.ID).Scan(&stepTimeout, &deploymentTimeout); err != nil {
+		t.Fatal(err)
+	}
+	if stepTimeout != 120 || deploymentTimeout != 600 {
+		t.Fatalf("timeouts were not snapshotted: %d %d", stepTimeout, deploymentTimeout)
 	}
 }

@@ -155,7 +155,7 @@ func (m *Manager) execute(d deployment.Deployment) {
 func (m *Manager) run(d deployment.Deployment) error {
 	var repo string
 	var stepSeconds, deploySeconds int
-	if err := m.db.QueryRow(`SELECT repository_url,step_timeout_seconds,deployment_timeout_seconds FROM projects WHERE id=?`, d.ProjectID).Scan(&repo, &stepSeconds, &deploySeconds); err != nil {
+	if err := m.db.QueryRow(`SELECT p.repository_url,d.step_timeout_seconds,d.deployment_timeout_seconds FROM deployments d JOIN projects p ON p.id=d.project_id WHERE d.id=?`, d.ID).Scan(&repo, &stepSeconds, &deploySeconds); err != nil {
 		return err
 	}
 	ctx, cancel := context.WithTimeout(m.ctx, time.Duration(deploySeconds)*time.Second)

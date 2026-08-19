@@ -6,8 +6,10 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"os"
 	"time"
 
+	"github.com/charlesfeng/mini-cicd/apps/server/internal/pipelineconfig"
 	"github.com/charlesfeng/mini-cicd/apps/server/internal/project"
 )
 
@@ -18,10 +20,16 @@ type Resolver interface {
 type FixedResolver interface {
 	ResolveCommit(context.Context, string, string, string, string) (Commit, error)
 }
+type RepositoryFileReader interface {
+	ReadFile(context.Context, string, string, string, string) ([]byte, error)
+}
 type projectSnapshot struct {
 	repo, branch, buildJSON, deployJSON, healthURL, healthExpected string
 	healthEnabled                                                  bool
 	healthInitial, healthTimeout, healthRetries, healthInterval    int
+	stepTimeout, deploymentTimeout                                 int
+	configSource, configSnapshot                                   string
+	applicationJSON                                                string
 }
 type Step struct {
 	ID               int64   `json:"id"`
@@ -40,19 +48,21 @@ type Service struct {
 	resolver Resolver
 }
 type Deployment struct {
-	ID            int64   `json:"id"`
-	ProjectID     string  `json:"projectId"`
-	Status        string  `json:"status"`
-	TriggerType   string  `json:"triggerType"`
-	Branch        string  `json:"branch"`
-	CommitSHA     string  `json:"commitSha"`
-	CommitMessage string  `json:"commitMessage"`
-	CommitAuthor  string  `json:"commitAuthor"`
-	ErrorSummary  string  `json:"errorSummary"`
-	QueuedAt      *string `json:"queuedAt"`
-	StartedAt     *string `json:"startedAt"`
-	FinishedAt    *string `json:"finishedAt"`
-	CreatedAt     string  `json:"createdAt"`
+	ID             int64   `json:"id"`
+	ProjectID      string  `json:"projectId"`
+	Status         string  `json:"status"`
+	TriggerType    string  `json:"triggerType"`
+	Branch         string  `json:"branch"`
+	CommitSHA      string  `json:"commitSha"`
+	CommitMessage  string  `json:"commitMessage"`
+	CommitAuthor   string  `json:"commitAuthor"`
+	ErrorSummary   string  `json:"errorSummary"`
+	ConfigSource   string  `json:"configSource"`
+	ConfigSnapshot string  `json:"configSnapshot,omitempty"`
+	QueuedAt       *string `json:"queuedAt"`
+	StartedAt      *string `json:"startedAt"`
+	FinishedAt     *string `json:"finishedAt"`
+	CreatedAt      string  `json:"createdAt"`
 }
 type Claimed struct {
 	Deployment
@@ -106,7 +116,7 @@ func (s *Service) CreateAtCommit(ctx context.Context, projectID, trigger, sha st
 
 func (s *Service) projectSnapshot(ctx context.Context, projectID string) (projectSnapshot, error) {
 	var p projectSnapshot
-	err := s.db.QueryRowContext(ctx, `SELECT repository_url,branch,build_steps_json,deploy_steps_json,health_enabled,health_url,health_initial_delay_seconds,health_timeout_seconds,health_retries,health_retry_interval_seconds,health_expected_status FROM projects WHERE id=? AND archived_at IS NULL`, projectID).Scan(&p.repo, &p.branch, &p.buildJSON, &p.deployJSON, &p.healthEnabled, &p.healthURL, &p.healthInitial, &p.healthTimeout, &p.healthRetries, &p.healthInterval, &p.healthExpected)
+	err := s.db.QueryRowContext(ctx, `SELECT repository_url,branch,build_steps_json,deploy_steps_json,health_enabled,health_url,health_initial_delay_seconds,health_timeout_seconds,health_retries,health_retry_interval_seconds,health_expected_status,step_timeout_seconds,deployment_timeout_seconds FROM projects WHERE id=? AND archived_at IS NULL`, projectID).Scan(&p.repo, &p.branch, &p.buildJSON, &p.deployJSON, &p.healthEnabled, &p.healthURL, &p.healthInitial, &p.healthTimeout, &p.healthRetries, &p.healthInterval, &p.healthExpected, &p.stepTimeout, &p.deploymentTimeout)
 	return p, err
 }
 
@@ -114,13 +124,37 @@ func (s *Service) createResolved(ctx context.Context, projectID, trigger string,
 	if len(commit.SHA) != 40 {
 		return Deployment{}, errors.New("resolver returned an invalid commit SHA")
 	}
+	var build, deploy []project.Step
+	if json.Unmarshal([]byte(snapshot.buildJSON), &build) != nil || json.Unmarshal([]byte(snapshot.deployJSON), &deploy) != nil {
+		return Deployment{}, errors.New("invalid stored pipeline")
+	}
+	snapshot.configSource = "project"
+	if reader, ok := s.resolver.(RepositoryFileReader); ok {
+		raw, readErr := reader.ReadFile(ctx, projectID, snapshot.repo, commit.SHA, pipelineconfig.Filename)
+		if readErr == nil {
+			resolved, parseErr := pipelineconfig.Parse(raw, pipelineconfig.Resolved{Build: build, Deploy: deploy, StepTimeout: time.Duration(snapshot.stepTimeout) * time.Second, DeploymentTimeout: time.Duration(snapshot.deploymentTimeout) * time.Second})
+			if parseErr != nil {
+				return Deployment{}, parseErr
+			}
+			build, deploy = resolved.Build, resolved.Deploy
+			applicationRaw, _ := json.Marshal(resolved.Application)
+			snapshot.applicationJSON = string(applicationRaw)
+			snapshot.stepTimeout, snapshot.deploymentTimeout = int(resolved.StepTimeout/time.Second), int(resolved.DeploymentTimeout/time.Second)
+			snapshot.configSource, snapshot.configSnapshot = "repository", string(raw)
+		} else if !errors.Is(readErr, os.ErrNotExist) {
+			return Deployment{}, fmt.Errorf("read %s: %w", pipelineconfig.Filename, readErr)
+		}
+	}
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return Deployment{}, err
 	}
 	defer tx.Rollback()
 	now := time.Now().UTC().Format(time.RFC3339Nano)
-	res, err := tx.ExecContext(ctx, `INSERT INTO deployments(project_id,status,trigger_type,branch,commit_sha,commit_message,commit_author,queued_at,created_at,health_enabled,health_url,health_initial_delay_seconds,health_timeout_seconds,health_retries,health_retry_interval_seconds,health_expected_status) VALUES(?,'queued',?,?,?,?,?,?,?,?,?,?,?,?,?,?)`, projectID, trigger, snapshot.branch, commit.SHA, commit.Message, commit.Author, now, now, snapshot.healthEnabled, snapshot.healthURL, snapshot.healthInitial, snapshot.healthTimeout, snapshot.healthRetries, snapshot.healthInterval, snapshot.healthExpected)
+	if snapshot.applicationJSON == "" {
+		snapshot.applicationJSON = "{}"
+	}
+	res, err := tx.ExecContext(ctx, `INSERT INTO deployments(project_id,status,trigger_type,branch,commit_sha,commit_message,commit_author,queued_at,created_at,health_enabled,health_url,health_initial_delay_seconds,health_timeout_seconds,health_retries,health_retry_interval_seconds,health_expected_status,step_timeout_seconds,deployment_timeout_seconds,config_source,config_snapshot,application_config_json) VALUES(?,'queued',?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`, projectID, trigger, snapshot.branch, commit.SHA, commit.Message, commit.Author, now, now, snapshot.healthEnabled, snapshot.healthURL, snapshot.healthInitial, snapshot.healthTimeout, snapshot.healthRetries, snapshot.healthInterval, snapshot.healthExpected, snapshot.stepTimeout, snapshot.deploymentTimeout, snapshot.configSource, snapshot.configSnapshot, snapshot.applicationJSON)
 	if err != nil {
 		return Deployment{}, err
 	}
@@ -130,10 +164,6 @@ func (s *Service) createResolved(ctx context.Context, projectID, trigger string,
 	}
 	if _, err = tx.ExecContext(ctx, `INSERT INTO deployment_variables(deployment_id,name,is_secret,plain_value,cipher_value,source_version) SELECT ?,name,is_secret,plain_value,cipher_value,version FROM project_variables WHERE project_id=? AND replaced_at IS NULL`, id, projectID); err != nil {
 		return Deployment{}, err
-	}
-	var build, deploy []project.Step
-	if json.Unmarshal([]byte(snapshot.buildJSON), &build) != nil || json.Unmarshal([]byte(snapshot.deployJSON), &deploy) != nil {
-		return Deployment{}, errors.New("invalid stored pipeline")
 	}
 	seq := 0
 	for _, phase := range []struct {
@@ -172,7 +202,7 @@ func (s *Service) Steps(ctx context.Context, id int64) ([]Step, error) {
 
 func (s *Service) Get(ctx context.Context, id int64) (Deployment, error) {
 	var d Deployment
-	err := s.db.QueryRowContext(ctx, selectDeployment+` WHERE id=?`, id).Scan(&d.ID, &d.ProjectID, &d.Status, &d.TriggerType, &d.Branch, &d.CommitSHA, &d.CommitMessage, &d.CommitAuthor, &d.ErrorSummary, &d.QueuedAt, &d.StartedAt, &d.FinishedAt, &d.CreatedAt)
+	err := s.db.QueryRowContext(ctx, selectDeployment+` WHERE id=?`, id).Scan(&d.ID, &d.ProjectID, &d.Status, &d.TriggerType, &d.Branch, &d.CommitSHA, &d.CommitMessage, &d.CommitAuthor, &d.ErrorSummary, &d.ConfigSource, &d.ConfigSnapshot, &d.QueuedAt, &d.StartedAt, &d.FinishedAt, &d.CreatedAt)
 	return d, err
 }
 func (s *Service) List(ctx context.Context, projectID string) ([]Deployment, error) {
@@ -184,7 +214,7 @@ func (s *Service) List(ctx context.Context, projectID string) ([]Deployment, err
 	out := []Deployment{}
 	for rows.Next() {
 		var d Deployment
-		if err = rows.Scan(&d.ID, &d.ProjectID, &d.Status, &d.TriggerType, &d.Branch, &d.CommitSHA, &d.CommitMessage, &d.CommitAuthor, &d.ErrorSummary, &d.QueuedAt, &d.StartedAt, &d.FinishedAt, &d.CreatedAt); err != nil {
+		if err = rows.Scan(&d.ID, &d.ProjectID, &d.Status, &d.TriggerType, &d.Branch, &d.CommitSHA, &d.CommitMessage, &d.CommitAuthor, &d.ErrorSummary, &d.ConfigSource, &d.ConfigSnapshot, &d.QueuedAt, &d.StartedAt, &d.FinishedAt, &d.CreatedAt); err != nil {
 			return nil, err
 		}
 		out = append(out, d)
@@ -276,4 +306,4 @@ func (s *Service) Finish(ctx context.Context, id int64, status, message string) 
 	return tx.Commit()
 }
 
-const selectDeployment = `SELECT id,project_id,status,trigger_type,branch,COALESCE(commit_sha,''),commit_message,commit_author,error_summary,queued_at,started_at,finished_at,created_at FROM deployments`
+const selectDeployment = `SELECT id,project_id,status,trigger_type,branch,COALESCE(commit_sha,''),commit_message,commit_author,error_summary,config_source,config_snapshot,queued_at,started_at,finished_at,created_at FROM deployments`
