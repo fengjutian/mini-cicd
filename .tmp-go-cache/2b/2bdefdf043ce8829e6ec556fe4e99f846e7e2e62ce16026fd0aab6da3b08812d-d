@@ -1,0 +1,4 @@
+# test log
+getenv MINICICD_MASTER_KEY
+getenv MINICICD_TEST_PRIVATE
+getenv PATH

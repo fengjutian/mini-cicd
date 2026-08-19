@@ -12,3 +12,4 @@ export type Deployment = { id: number; projectId: string; status: string; trigge
 export type DeploymentStep = { id: number; deploymentId: number; sequence: number; phase: string; name: string; command: string; workingDirectory: string; status: string; exitCode?: number; startedAt?: string; finishedAt?: string }
 export type Variable = { name: string; version: number; isSecret: boolean; value?: string; updatedAt: string }
 export type ApplicationResult = { adapter: string; deploymentId: number; output: string; checkedAt: string }
+export type CommitStatusDelivery = { id: number; deploymentId: number; deploymentStatus: string; status: string; attempts: number; lastError: string; createdAt: string }

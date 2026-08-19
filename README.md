@@ -92,6 +92,7 @@ $bytes = New-Object byte[] 32
 | `GET` | `/api/v1/deployments/{id}/logs` | SSE 部署日志，支持 `Last-Event-ID` |
 | `GET` | `/api/v1/dashboard` | Dashboard 统计 |
 | `POST` | `/api/v1/webhooks/{projectId}/{provider}` | GitHub、GitLab 或 Gitea Push Webhook |
+| `GET` | `/api/v1/projects/{id}/commit-status-deliveries` | GitHub/GitLab Commit Status 投递记录 |
 
 生产安装、反向代理和 Webhook 配置见 [docs/deployment.md](docs/deployment.md)。
 

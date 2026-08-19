@@ -1,0 +1,2 @@
+./capi_windows_386.go
+./pthread_windows_386.go
