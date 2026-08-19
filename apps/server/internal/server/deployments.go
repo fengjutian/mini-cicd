@@ -79,7 +79,8 @@ func (s *Server) approveDeployment(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	u := r.Context().Value(userKey).(user)
-	d, err := s.deps.Approve(r.Context(), id, u.Username)
+	var input struct{Comment string `json:"comment"`}; if r.ContentLength>0 { if err:=decodeJSON(r,&input);err!=nil{writeError(w,400,"invalid_request",err.Error());return} }; if len(input.Comment)>500{writeError(w,422,"invalid_comment","Approval comment is too long.");return}
+	d, err := s.deps.Approve(r.Context(), id, u.ID, u.Username, input.Comment)
 	if err != nil {
 		s.deploymentError(w, err)
 		return
@@ -87,6 +88,7 @@ func (s *Server) approveDeployment(w http.ResponseWriter, r *http.Request) {
 	s.runner.Wake()
 	writeJSON(w, http.StatusOK, d)
 }
+func (s *Server) rejectDeployment(w http.ResponseWriter,r *http.Request){id,ok:=deploymentID(w,r);if !ok{return};var input struct{Comment string `json:"comment"`};if err:=decodeJSON(r,&input);err!=nil{writeError(w,400,"invalid_request",err.Error());return};if len(input.Comment)>500{writeError(w,422,"invalid_comment","Rejection comment is too long.");return};u:=r.Context().Value(userKey).(user);d,err:=s.deps.Reject(r.Context(),id,u.ID,u.Username,input.Comment);if err!=nil{s.deploymentError(w,err);return};s.runner.Wake();writeJSON(w,http.StatusOK,d)}
 func (s *Server) listDeployments(w http.ResponseWriter, r *http.Request) {
 	items, err := s.deps.List(r.Context(), r.PathValue("id"))
 	if err != nil {

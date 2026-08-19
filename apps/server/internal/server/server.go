@@ -162,6 +162,7 @@ func New(db *sql.DB, cfg config.Config, logger *slog.Logger) (*Server, error) {
 	mux.HandleFunc("POST /api/v1/deployments/{id}/redeploy", s.requireAuth(s.redeployDeployment))
 	mux.HandleFunc("POST /api/v1/deployments/{id}/rollback", s.requireAuth(s.rollbackDeployment))
 	mux.HandleFunc("POST /api/v1/deployments/{id}/approve", s.requireAuth(s.approveDeployment))
+	mux.HandleFunc("POST /api/v1/deployments/{id}/reject", s.requireAuth(s.rejectDeployment))
 	mux.HandleFunc("GET /api/v1/deployments/{id}/logs", s.requireAuth(s.deploymentLogs))
 	mux.HandleFunc("GET /healthz", s.health)
 	mux.HandleFunc("GET /metrics", s.metrics)

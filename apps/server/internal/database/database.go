@@ -105,7 +105,14 @@ func Migrate(db *sql.DB) error {
 			return err
 		}
 	}
+	if version < 15 { if err := applyV15(db); err != nil { return err } }
 	return nil
+}
+
+func applyV15(db *sql.DB) error {
+	if err := ensureColumn(db,"deployments","required_approvals","INTEGER NOT NULL DEFAULT 0"); err != nil{return err}
+	const schema=`CREATE TABLE IF NOT EXISTS deployment_approvals(id INTEGER PRIMARY KEY AUTOINCREMENT,deployment_id INTEGER NOT NULL REFERENCES deployments(id) ON DELETE CASCADE,user_id TEXT NOT NULL REFERENCES users(id),username TEXT NOT NULL,decision TEXT NOT NULL CHECK(decision IN ('approved','rejected')),comment TEXT NOT NULL DEFAULT '',created_at TEXT NOT NULL,UNIQUE(deployment_id,user_id));CREATE INDEX IF NOT EXISTS idx_deployment_approvals ON deployment_approvals(deployment_id,id);`
+	if _,err:=db.Exec(schema);err!=nil{return err};return recordMigration(db,15)
 }
 
 func applyV14(db *sql.DB) error {

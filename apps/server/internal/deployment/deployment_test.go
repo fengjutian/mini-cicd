@@ -51,6 +51,7 @@ func insertProject(t *testing.T, db *sql.DB, id string) {
 func TestCreateSnapshotsVariables(t *testing.T) {
 	db := testDB(t)
 	insertProject(t, db, "one")
+	_, _ = db.Exec(`INSERT INTO users(id,email,username,password_hash,role,created_at) VALUES('u','owner@example.com','owner','x','owner','now')`)
 	now := time.Now().UTC().Format(time.RFC3339Nano)
 	_, _ = db.Exec(`INSERT INTO project_variables(project_id,name,version,is_secret,plain_value,created_at) VALUES('one','VALUE',1,0,'old',?)`, now)
 	s := New(db, fakeResolver{})
@@ -228,7 +229,7 @@ func TestProtectedEnvironmentRequiresApproval(t *testing.T) {
 	if _, ok, err := s.Claim(context.Background(), "runner"); err != nil || ok {
 		t.Fatalf("pending deployment was claimable: %v %v", ok, err)
 	}
-	approved, err := s.Approve(context.Background(), d.ID, "owner")
+	approved, err := s.Approve(context.Background(), d.ID, "u", "owner", "looks good")
 	if err != nil {
 		t.Fatal(err)
 	}

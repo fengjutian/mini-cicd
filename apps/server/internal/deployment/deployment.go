@@ -35,6 +35,7 @@ type projectSnapshot struct {
 	cacheJSON                                                      string
 	environment, environmentJSON, approvalStatus                   string
 	commitStatusJSON                                               string
+	requiredApprovals                                              int
 }
 type Step struct {
 	ID               int64   `json:"id"`
@@ -72,6 +73,8 @@ type Deployment struct {
 	ApprovalStatus             string  `json:"approvalStatus"`
 	ApprovedAt                 *string `json:"approvedAt,omitempty"`
 	ApprovedBy                 string  `json:"approvedBy,omitempty"`
+	RequiredApprovals          int     `json:"requiredApprovals"`
+	ApprovalCount              int     `json:"approvalCount"`
 	QueuedAt                   *string `json:"queuedAt"`
 	StartedAt                  *string `json:"startedAt"`
 	FinishedAt                 *string `json:"finishedAt"`
@@ -222,7 +225,9 @@ func (s *Service) createResolved(ctx context.Context, projectID, trigger, enviro
 			}
 			envRaw, _ := json.Marshal(env)
 			snapshot.environmentJSON = string(envRaw)
-			if env.ApprovalRequired {
+			snapshot.requiredApprovals = env.RequiredApprovals
+			if env.ApprovalRequired && snapshot.requiredApprovals == 0 { snapshot.requiredApprovals = 1 }
+			if snapshot.requiredApprovals > 0 {
 				snapshot.approvalStatus = "pending"
 			}
 			snapshot.stepTimeout, snapshot.deploymentTimeout = int(resolved.StepTimeout/time.Second), int(resolved.DeploymentTimeout/time.Second)
@@ -260,7 +265,7 @@ func (s *Service) createResolved(ctx context.Context, projectID, trigger, enviro
 	if err != nil {
 		return Deployment{}, err
 	}
-	if _, err = tx.ExecContext(ctx, `UPDATE deployments SET environment=?,environment_config_json=?,approval_status=? WHERE id=?`, snapshot.environment, snapshot.environmentJSON, snapshot.approvalStatus, id); err != nil {
+	if _, err = tx.ExecContext(ctx, `UPDATE deployments SET environment=?,environment_config_json=?,approval_status=?,required_approvals=? WHERE id=?`, snapshot.environment, snapshot.environmentJSON, snapshot.approvalStatus, snapshot.requiredApprovals, id); err != nil {
 		return Deployment{}, err
 	}
 	if snapshot.commitStatusJSON != "{}" {
@@ -337,7 +342,7 @@ func insideWindow(now time.Time, w pipelineconfig.DeploymentWindow) bool {
 
 func (s *Service) Get(ctx context.Context, id int64) (Deployment, error) {
 	var d Deployment
-	err := s.db.QueryRowContext(ctx, selectDeployment+` WHERE id=?`, id).Scan(&d.ID, &d.ProjectID, &d.Status, &d.TriggerType, &d.Branch, &d.CommitSHA, &d.CommitMessage, &d.CommitAuthor, &d.ErrorSummary, &d.ConfigSource, &d.ConfigSnapshot, &d.HasArtifacts, &d.ArtifactSourceDeploymentID, &d.Environment, &d.ApprovalStatus, &d.ApprovedAt, &d.ApprovedBy, &d.CacheKey, &d.CacheHit, &d.QueuedAt, &d.StartedAt, &d.FinishedAt, &d.CreatedAt)
+	err := s.db.QueryRowContext(ctx, selectDeployment+` WHERE id=?`, id).Scan(&d.ID, &d.ProjectID, &d.Status, &d.TriggerType, &d.Branch, &d.CommitSHA, &d.CommitMessage, &d.CommitAuthor, &d.ErrorSummary, &d.ConfigSource, &d.ConfigSnapshot, &d.HasArtifacts, &d.ArtifactSourceDeploymentID, &d.Environment, &d.ApprovalStatus, &d.ApprovedAt, &d.ApprovedBy, &d.RequiredApprovals, &d.ApprovalCount, &d.CacheKey, &d.CacheHit, &d.QueuedAt, &d.StartedAt, &d.FinishedAt, &d.CreatedAt)
 	return d, err
 }
 func (s *Service) List(ctx context.Context, projectID string) ([]Deployment, error) {
@@ -349,7 +354,7 @@ func (s *Service) List(ctx context.Context, projectID string) ([]Deployment, err
 	out := []Deployment{}
 	for rows.Next() {
 		var d Deployment
-		if err = rows.Scan(&d.ID, &d.ProjectID, &d.Status, &d.TriggerType, &d.Branch, &d.CommitSHA, &d.CommitMessage, &d.CommitAuthor, &d.ErrorSummary, &d.ConfigSource, &d.ConfigSnapshot, &d.HasArtifacts, &d.ArtifactSourceDeploymentID, &d.Environment, &d.ApprovalStatus, &d.ApprovedAt, &d.ApprovedBy, &d.CacheKey, &d.CacheHit, &d.QueuedAt, &d.StartedAt, &d.FinishedAt, &d.CreatedAt); err != nil {
+		if err = rows.Scan(&d.ID, &d.ProjectID, &d.Status, &d.TriggerType, &d.Branch, &d.CommitSHA, &d.CommitMessage, &d.CommitAuthor, &d.ErrorSummary, &d.ConfigSource, &d.ConfigSnapshot, &d.HasArtifacts, &d.ArtifactSourceDeploymentID, &d.Environment, &d.ApprovalStatus, &d.ApprovedAt, &d.ApprovedBy, &d.RequiredApprovals, &d.ApprovalCount, &d.CacheKey, &d.CacheHit, &d.QueuedAt, &d.StartedAt, &d.FinishedAt, &d.CreatedAt); err != nil {
 			return nil, err
 		}
 		out = append(out, d)
@@ -391,18 +396,11 @@ func (s *Service) Claim(ctx context.Context, runnerID string) (Deployment, bool,
 	return d, true, err
 }
 
-func (s *Service) Approve(ctx context.Context, id int64, approvedBy string) (Deployment, error) {
-	now := time.Now().UTC().Format(time.RFC3339Nano)
-	res, err := s.db.ExecContext(ctx, `UPDATE deployments SET approval_status='approved',approved_at=?,approved_by=? WHERE id=? AND status='queued' AND approval_status='pending'`, now, approvedBy, id)
-	if err != nil {
-		return Deployment{}, err
-	}
-	n, _ := res.RowsAffected()
-	if n != 1 {
-		return Deployment{}, errors.New("deployment is not awaiting approval")
-	}
-	return s.Get(ctx, id)
+func (s *Service) Approve(ctx context.Context, id int64, userID, approvedBy, comment string) (Deployment, error) {
+	tx,err:=s.db.BeginTx(ctx,nil);if err!=nil{return Deployment{},err};defer tx.Rollback();var required int;var state,status string;if err=tx.QueryRowContext(ctx,`SELECT required_approvals,approval_status,status FROM deployments WHERE id=?`,id).Scan(&required,&state,&status);err!=nil{return Deployment{},err};if state!="pending"||status!="queued"{return Deployment{},errors.New("deployment is not awaiting approval")};now:=time.Now().UTC().Format(time.RFC3339Nano);if _,err=tx.ExecContext(ctx,`INSERT INTO deployment_approvals(deployment_id,user_id,username,decision,comment,created_at) VALUES(?,?,?,'approved',?,?)`,id,userID,approvedBy,comment,now);err!=nil{return Deployment{},errors.New("user has already reviewed this deployment")};var count int;if err=tx.QueryRowContext(ctx,`SELECT COUNT(*) FROM deployment_approvals WHERE deployment_id=? AND decision='approved'`,id).Scan(&count);err!=nil{return Deployment{},err};if count>=required{_,err=tx.ExecContext(ctx,`UPDATE deployments SET approval_status='approved',approved_at=?,approved_by=? WHERE id=?`,now,approvedBy,id)};if err!=nil{return Deployment{},err};if err=tx.Commit();err!=nil{return Deployment{},err};return s.Get(ctx,id)
 }
+
+func (s *Service) Reject(ctx context.Context,id int64,userID,username,comment string)(Deployment,error){tx,err:=s.db.BeginTx(ctx,nil);if err!=nil{return Deployment{},err};defer tx.Rollback();now:=time.Now().UTC().Format(time.RFC3339Nano);res,err:=tx.ExecContext(ctx,`UPDATE deployments SET approval_status='rejected',status='cancelled',finished_at=?,error_summary='deployment rejected by approver' WHERE id=? AND status='queued' AND approval_status='pending'`,now,id);if err!=nil{return Deployment{},err};n,_:=res.RowsAffected();if n!=1{return Deployment{},errors.New("deployment is not awaiting approval")};if _,err=tx.ExecContext(ctx,`INSERT INTO deployment_approvals(deployment_id,user_id,username,decision,comment,created_at) VALUES(?,?,?,'rejected',?,?)`,id,userID,username,comment,now);err!=nil{return Deployment{},err};if err=tx.Commit();err!=nil{return Deployment{},err};return s.Get(ctx,id)}
 
 func (s *Service) Cancel(ctx context.Context, id int64) error {
 	res, err := s.db.ExecContext(ctx, `UPDATE deployments SET status=CASE WHEN status='queued' THEN 'cancelled' ELSE 'cancelling' END,cancel_requested_at=?,finished_at=CASE WHEN status='queued' THEN ? ELSE finished_at END WHERE id=? AND status IN ('queued','preparing','running')`, time.Now().UTC().Format(time.RFC3339Nano), time.Now().UTC().Format(time.RFC3339Nano), id)
@@ -454,4 +452,4 @@ func (s *Service) Finish(ctx context.Context, id int64, status, message string) 
 	return tx.Commit()
 }
 
-const selectDeployment = `SELECT id,project_id,status,trigger_type,branch,COALESCE(commit_sha,''),commit_message,commit_author,error_summary,config_source,config_snapshot,artifact_path IS NOT NULL,artifact_source_deployment_id,environment,approval_status,approved_at,COALESCE(approved_by,''),cache_key,cache_hit,queued_at,started_at,finished_at,created_at FROM deployments`
+const selectDeployment = `SELECT id,project_id,status,trigger_type,branch,COALESCE(commit_sha,''),commit_message,commit_author,error_summary,config_source,config_snapshot,artifact_path IS NOT NULL,artifact_source_deployment_id,environment,approval_status,approved_at,COALESCE(approved_by,''),required_approvals,(SELECT COUNT(*) FROM deployment_approvals a WHERE a.deployment_id=deployments.id AND a.decision='approved'),cache_key,cache_hit,queued_at,started_at,finished_at,created_at FROM deployments`

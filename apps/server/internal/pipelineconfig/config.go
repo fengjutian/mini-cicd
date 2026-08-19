@@ -43,6 +43,7 @@ type CommitStatus struct {
 
 type Environment struct {
 	ApprovalRequired bool              `yaml:"approvalRequired" json:"approvalRequired"`
+	RequiredApprovals int              `yaml:"requiredApprovals" json:"requiredApprovals"`
 	AllowedBranches  []string          `yaml:"allowedBranches" json:"allowedBranches"`
 	Frozen           bool              `yaml:"frozen" json:"frozen"`
 	Window           *DeploymentWindow `yaml:"deploymentWindow" json:"deploymentWindow,omitempty"`
@@ -247,6 +248,8 @@ func validateEnvironments(items map[string]Environment) error {
 	envName := regexp.MustCompile(`^[a-z][a-z0-9-]{0,31}$`)
 	days := map[string]bool{"sun": true, "mon": true, "tue": true, "wed": true, "thu": true, "fri": true, "sat": true}
 	for name, cfg := range items {
+		if cfg.RequiredApprovals < 0 || cfg.RequiredApprovals > 20 { return fmt.Errorf("environment %s requiredApprovals must be between 0 and 20", name) }
+		if cfg.ApprovalRequired && cfg.RequiredApprovals == 0 { cfg.RequiredApprovals = 1; items[name] = cfg }
 		if !envName.MatchString(name) {
 			return errors.New("environment names must use lowercase letters, numbers, and hyphens")
 		}
