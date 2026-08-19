@@ -90,7 +90,7 @@ func (s *Service) Create(ctx context.Context, projectID, trigger string) (Deploy
 	return s.CreateForEnvironment(ctx, projectID, trigger, "production")
 }
 func (s *Service) CreateForEnvironment(ctx context.Context, projectID, trigger, environment string) (Deployment, error) {
-	if trigger != "manual" && trigger != "webhook" && trigger != "redeploy" {
+	if trigger != "manual" && trigger != "webhook" && trigger != "redeploy" && trigger != "scheduled" {
 		return Deployment{}, errors.New("invalid trigger type")
 	}
 	snapshot, err := s.projectSnapshot(ctx, projectID)

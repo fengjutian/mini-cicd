@@ -199,3 +199,11 @@ exclusion.
 Saved artifacts are listed by `GET /api/v1/deployments/{id}/artifacts`; every
 file includes its size and SHA-256 digest and can be downloaded through the
 authenticated artifact path endpoint.
+
+## Scheduled deployments
+
+Project schedules persist an environment, interval (1 minute to 1 year),
+priority, parameters, and `cancelPrevious` policy. The server scans due rules
+every 15 seconds, advances `nextRunAt` transactionally before creating a
+`scheduled` deployment, and records the latest deployment and error. Rules can
+be paused, resumed, or deleted from the project page and survive restarts.
